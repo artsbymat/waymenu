@@ -31,6 +31,7 @@ pub enum PluginAction {
     LaunchBinary(String),
     RunShell(String),
     CopyText(String),
+    OpenUrl(String),
     None,
 }
 

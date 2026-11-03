@@ -171,9 +171,15 @@ impl PluginManager {
     }
     pub fn select<'a>(&'a self, input: &'a str) -> Option<(&'a dyn Plugin, &'a str)> {
         self.plugins.iter().find_map(|plugin| {
-            input
-                .strip_prefix(plugin.prefix())
-                .map(|query| (plugin.as_ref(), query))
+            let prefix = plugin.prefix();
+            let query = input.strip_prefix(prefix)?;
+            if prefix.chars().last().is_some_and(char::is_alphanumeric)
+                && !query.is_empty()
+                && !query.starts_with(char::is_whitespace)
+            {
+                return None;
+            }
+            Some((plugin.as_ref(), query.trim_start()))
         })
     }
 
@@ -371,6 +377,7 @@ impl Plugin for DynamicPlugin {
             waymenu_plugin_api::PluginAction::LaunchBinary(path) => Action::LaunchBinary(path),
             waymenu_plugin_api::PluginAction::RunShell(command) => Action::RunShell(command),
             waymenu_plugin_api::PluginAction::CopyText(text) => Action::CopyText(text),
+            waymenu_plugin_api::PluginAction::OpenUrl(url) => Action::OpenUrl(url),
             waymenu_plugin_api::PluginAction::None => Action::None,
         }
     }
@@ -440,6 +447,96 @@ mod tests {
         let (plugin, query) = manager.select("!printf test").unwrap();
         assert_eq!(plugin.id(), "shell");
         assert_eq!(query, "printf test");
+    }
+
+    #[test]
+    fn manager_selects_space_delimited_prefix_without_hijacking_apps() {
+        struct MockGooglePlugin;
+        impl Plugin for MockGooglePlugin {
+            fn id(&self) -> &str {
+                "google"
+            }
+            fn prefix(&self) -> &str {
+                "g "
+            }
+            fn name(&self) -> &str {
+                "Google"
+            }
+            fn description(&self) -> &str {
+                "Search"
+            }
+            fn search(&self, _: &str) -> Vec<SearchResult> {
+                Vec::new()
+            }
+            fn action(&self, _: &SearchResult) -> Action {
+                Action::None
+            }
+        }
+
+        let manager = PluginManager {
+            plugins: vec![
+                Box::new(ShellPlugin::new("!".into(), None)),
+                Box::new(MockGooglePlugin),
+            ],
+        };
+
+        // Matches with query
+        let (plugin, query) = manager.select("g hyprland linux").unwrap();
+        assert_eq!(plugin.id(), "google");
+        assert_eq!(query, "hyprland linux");
+
+        // Matches prefix with trailing space and empty query
+        let (plugin, query) = manager.select("g ").unwrap();
+        assert_eq!(plugin.id(), "google");
+        assert_eq!(query, "");
+
+        // Does NOT hijack "g" alone or words starting with 'g' (e.g. google chrome, gimp, git)
+        assert!(manager.select("g").is_none());
+        assert!(manager.select("gimp").is_none());
+        assert!(manager.select("google-chrome").is_none());
+        assert!(manager.select("git").is_none());
+    }
+
+    #[test]
+    fn loads_and_executes_built_google_plugin() {
+        let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/google/target/release/libgoogle.so");
+        if !so_path.exists() {
+            return;
+        }
+        let plugin = DynamicPlugin::load(&so_path).unwrap();
+        assert_eq!(plugin.id(), "google");
+        assert_eq!(plugin.prefix(), "g ");
+
+        let results = plugin.search("hyprland linux");
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].id,
+            "https://www.google.com/search?q=hyprland+linux"
+        );
+        assert_eq!(results[0].title, "Search Google for \"hyprland linux\"");
+
+        let action = plugin.action(&results[0]);
+        assert_eq!(
+            action,
+            Action::OpenUrl("https://www.google.com/search?q=hyprland+linux".into())
+        );
+    }
+
+    #[test]
+    fn loads_and_executes_built_rink_plugin() {
+        let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/rink/target/release/librink.so");
+        if !so_path.exists() {
+            return;
+        }
+        let plugin = DynamicPlugin::load(&so_path).unwrap();
+        assert_eq!(plugin.id(), "rink");
+        assert_eq!(plugin.prefix(), "= ");
+
+        let results = plugin.search("2+2");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "4");
     }
 
     #[test]

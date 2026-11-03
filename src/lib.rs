@@ -25,5 +25,6 @@ pub enum Action {
     LaunchBinary(String),
     RunShell(String),
     CopyText(String),
+    OpenUrl(String),
     None,
 }

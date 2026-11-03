@@ -26,7 +26,7 @@ pub extern "C" fn waymenu_plugin_v2() -> PluginApiV2 {
     PluginApiV2 {
         abi_version: ABI_VERSION,
         id: c"rink".as_ptr(),
-        prefix: c"=".as_ptr(),
+        prefix: c"= ".as_ptr(),
         name: c"Rink Calculator".as_ptr(),
         description: c"Calculator and unit conversion powered by Rink.".as_ptr(),
         create: Some(create),
@@ -123,5 +123,12 @@ mod tests {
         assert!(calculation.starts_with('4'));
         let conversion = rink_core::one_line(&mut context, "1 mile -> km").unwrap();
         assert!(conversion.contains("1.609344 kilometer"));
+    }
+
+    #[test]
+    fn exports_expected_prefix() {
+        let api = super::waymenu_plugin_v2();
+        let prefix = unsafe { std::ffi::CStr::from_ptr(api.prefix) }.to_str().unwrap();
+        assert_eq!(prefix, "= ");
     }
 }

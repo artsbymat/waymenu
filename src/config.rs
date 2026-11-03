@@ -107,7 +107,7 @@ impl Default for Plugins {
 impl Default for Binary {
     fn default() -> Self {
         Self {
-            prefix: "$".into(),
+            prefix: "$ ".into(),
             show_path: true,
         }
     }
@@ -288,6 +288,12 @@ mod tests {
         let mut config = Config::default();
         config.binary.prefix = "!".into();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn default_binary_prefix_has_trailing_space() {
+        let config = Config::default();
+        assert_eq!(config.binary.prefix, "$ ");
     }
 
     #[test]

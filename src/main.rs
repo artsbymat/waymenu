@@ -82,8 +82,22 @@ fn execute_action(action: Action, config: &Config) -> Result<(), Box<dyn std::er
             Command::new(shell).args(["-c", &command]).spawn()?;
         }
         Action::CopyText(text) => copy_to_clipboard(&text)?,
+        Action::OpenUrl(url) => open_url(&url)?,
         Action::None => {}
     }
+    Ok(())
+}
+
+fn open_url(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if let Ok(browser) = env::var("BROWSER") {
+        if Command::new(&browser).arg(url).spawn().is_ok() {
+            return Ok(());
+        }
+    }
+    if Command::new("xdg-open").arg(url).spawn().is_ok() {
+        return Ok(());
+    }
+    Command::new("gio").args(["open", url]).spawn()?;
     Ok(())
 }
 
@@ -105,6 +119,7 @@ fn dispatch(query: &str, config: &Config) -> Result<(), Box<dyn std::error::Erro
         return Ok(());
     }
     if let Some(query) = query.strip_prefix(&config.binary.prefix) {
+        let query = query.trim_start();
         let binaries = binary::discover();
         let results: Vec<_> = binaries.iter().map(|item| item.as_result()).collect();
         let mut matches = search::filter(&results, query, config.general.max_results);

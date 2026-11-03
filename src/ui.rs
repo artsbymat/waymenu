@@ -192,13 +192,28 @@ impl UiModel {
             self.input = if self.dmenu.is_some() {
                 item.title.clone()
             } else if self.input.starts_with(&self.config.binary.prefix) {
-                format!("{}{}", self.config.binary.prefix, item.title)
+                let separator = if self.config.binary.prefix.ends_with(' ') {
+                    ""
+                } else {
+                    " "
+                };
+                format!("{}{separator}{}", self.config.binary.prefix, item.title)
             } else if let Some((plugin, _)) = self
                 .plugins
                 .as_ref()
                 .and_then(|plugins| plugins.select(&self.input))
             {
-                format!("{}{}", plugin.prefix(), item.title)
+                let separator = if plugin
+                    .prefix()
+                    .chars()
+                    .last()
+                    .is_some_and(char::is_alphanumeric)
+                {
+                    " "
+                } else {
+                    ""
+                };
+                format!("{}{}{}", plugin.prefix(), separator, item.title)
             } else {
                 item.title.clone()
             };
@@ -293,9 +308,21 @@ impl UiModel {
         if self.dmenu.is_some() {
             return &self.input;
         }
+        if let Some((_, query)) = self
+            .plugins
+            .as_ref()
+            .and_then(|plugins| plugins.select(&self.input))
+        {
+            return query;
+        }
         self.input
             .strip_prefix(&self.config.binary.prefix)
-            .or_else(|| self.input.strip_prefix(&self.config.plugins.shell_prefix))
+            .map(str::trim_start)
+            .or_else(|| {
+                self.input
+                    .strip_prefix(&self.config.plugins.shell_prefix)
+                    .map(str::trim_start)
+            })
             .unwrap_or(&self.input)
     }
 
@@ -468,6 +495,7 @@ impl UiModel {
             return;
         }
         if let Some(query) = self.input.strip_prefix(&self.config.binary.prefix) {
+            let query = query.trim_start();
             let Some(binaries) = &self.binaries else {
                 self.results = vec![SearchResult {
                     id: String::new(),
@@ -510,7 +538,7 @@ impl UiModel {
             ),
             help_row(
                 "provider-binaries",
-                &format!("{} · Binary search", self.config.binary.prefix),
+                &format!("{} · Binary search", self.config.binary.prefix.trim_end()),
                 "Search executable files available through PATH.",
             ),
         ];
@@ -523,7 +551,7 @@ impl UiModel {
         rows.extend(plugins.into_iter().map(|plugin| {
             help_row(
                 &format!("plugin-{}", plugin.id),
-                &format!("{} · {}", plugin.prefix, plugin.name),
+                &format!("{} · {}", plugin.prefix.trim_end(), plugin.name),
                 &format!("{}  (id: {})", plugin.description, plugin.id),
             )
         }));
@@ -1394,14 +1422,14 @@ mod tests {
     #[test]
     fn binary_autocomplete_preserves_provider_prefix() {
         let mut model = UiModel::new(Config::default());
-        model.input = "$car".into();
+        model.input = "$ car".into();
         model.cursor = model.input.len();
         model.set_binaries(vec![Binary {
             name: "cargo".into(),
             path: "/usr/bin/cargo".into(),
         }]);
         model.autocomplete();
-        assert_eq!(model.input, "$cargo");
+        assert_eq!(model.input, "$ cargo");
         assert_eq!(
             model.selected_action(),
             Action::LaunchBinary("/usr/bin/cargo".into())
