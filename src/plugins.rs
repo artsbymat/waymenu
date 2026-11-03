@@ -1,6 +1,9 @@
 use crate::{config::Config, Action, SearchResult};
+use libloading::Library;
 use std::{
+    ffi::{c_char, c_void, CStr, CString},
     io::{self, Read},
+    path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -9,12 +12,21 @@ use std::{
     time::Duration,
 };
 
-pub trait Plugin: Send + Sync {
-    fn id(&self) -> &'static str;
+pub trait Plugin {
+    fn id(&self) -> &str;
     fn prefix(&self) -> &str;
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
     fn search(&self, query: &str) -> Vec<SearchResult>;
     fn action(&self, result: &SearchResult) -> Action;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginMetadata {
+    pub id: String,
+    pub prefix: String,
+    pub name: String,
+    pub description: String,
 }
 
 pub struct ShellOutput {
@@ -115,12 +127,47 @@ pub struct PluginManager {
 }
 impl PluginManager {
     pub fn from_config(config: &Config) -> Self {
-        Self {
-            plugins: vec![Box::new(ShellPlugin::new(
-                config.plugins.shell_prefix.clone(),
-                config.plugins.shell.clone(),
-            ))],
+        Self::from_config_at(config, &dynamic_plugin_dir())
+    }
+
+    fn from_config_at(config: &Config, directory: &Path) -> Self {
+        let mut plugins: Vec<Box<dyn Plugin>> = vec![Box::new(ShellPlugin::new(
+            config.plugins.shell_prefix.clone(),
+            config.plugins.shell.clone(),
+        ))];
+        if config.plugins.dynamic {
+            match discover_dynamic_plugins(directory) {
+                Ok(paths) => {
+                    for path in paths {
+                        match DynamicPlugin::load(&path) {
+                            Ok(plugin) => {
+                                if plugins.iter().any(|loaded| {
+                                    loaded.prefix() == plugin.prefix() || loaded.id() == plugin.id()
+                                }) {
+                                    eprintln!(
+                                        "waymenu: skipping plugin {} from {} because its id or prefix is already registered",
+                                        plugin.id(),
+                                        path.display()
+                                    );
+                                } else {
+                                    plugins.push(Box::new(plugin));
+                                }
+                            }
+                            Err(error) => eprintln!(
+                                "waymenu: could not load plugin {}: {error}",
+                                path.display()
+                            ),
+                        }
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => eprintln!(
+                    "waymenu: could not read plugin directory {}: {error}",
+                    directory.display()
+                ),
+            }
         }
+        Self { plugins }
     }
     pub fn select<'a>(&'a self, input: &'a str) -> Option<(&'a dyn Plugin, &'a str)> {
         self.plugins.iter().find_map(|plugin| {
@@ -128,6 +175,204 @@ impl PluginManager {
                 .strip_prefix(plugin.prefix())
                 .map(|query| (plugin.as_ref(), query))
         })
+    }
+
+    pub fn metadata(&self) -> Vec<PluginMetadata> {
+        self.plugins
+            .iter()
+            .map(|plugin| PluginMetadata {
+                id: plugin.id().to_owned(),
+                prefix: plugin.prefix().to_owned(),
+                name: plugin.name().to_owned(),
+                description: plugin.description().to_owned(),
+            })
+            .collect()
+    }
+}
+
+fn dynamic_plugin_dir() -> PathBuf {
+    std::env::var_os("WAYMENU_PLUGIN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::config::config_dir().join("plugins"))
+}
+
+fn discover_dynamic_plugins(directory: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut paths = std::fs::read_dir(directory)?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file() && path.extension().is_some_and(|extension| extension == "so")
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
+}
+
+struct DynamicPlugin {
+    _library: Library,
+    api: waymenu_plugin_api::PluginApiV2,
+    state: *mut c_void,
+    id: String,
+    prefix: String,
+    name: String,
+    description: String,
+}
+
+impl DynamicPlugin {
+    fn load(path: &Path) -> Result<Self, String> {
+        // SAFETY: This opens a user-installed native plugin. The plugin directory is an
+        // explicit trust boundary; its ABI entry point and function table are checked below.
+        let library = unsafe { Library::new(path) }.map_err(|error| error.to_string())?;
+        // SAFETY: The plugin SDK requires each shared library to export this exact v1 symbol.
+        let entry = unsafe {
+            library.get::<unsafe extern "C" fn() -> waymenu_plugin_api::PluginApiV2>(
+                b"waymenu_plugin_v2\0",
+            )
+        }
+        .map_err(|error| format!("missing waymenu_plugin_v2 entry point: {error}"))?;
+        // SAFETY: The function pointer came from this still-live library and follows the SDK.
+        let api = unsafe { entry() };
+        if api.abi_version != waymenu_plugin_api::ABI_VERSION {
+            return Err(format!(
+                "unsupported plugin ABI {}, expected {}",
+                api.abi_version,
+                waymenu_plugin_api::ABI_VERSION
+            ));
+        }
+        let create = api.create.ok_or("plugin has no create callback")?;
+        if api.destroy.is_none()
+            || api.search.is_none()
+            || api.action.is_none()
+            || api.free_json.is_none()
+        {
+            return Err("plugin API is missing a required callback".into());
+        }
+        // SAFETY: Metadata pointers must be static NUL-terminated strings per ABI v1.
+        let id = unsafe { copy_c_string(api.id) }.ok_or("plugin id is null")?;
+        // SAFETY: Same metadata contract as above.
+        let prefix = unsafe { copy_c_string(api.prefix) }.ok_or("plugin prefix is null")?;
+        // SAFETY: Same metadata contract as above.
+        let name = unsafe { copy_c_string(api.name) }.ok_or("plugin name is null")?;
+        // SAFETY: Same metadata contract as above.
+        let description =
+            unsafe { copy_c_string(api.description) }.ok_or("plugin description is null")?;
+        if id.is_empty() || prefix.is_empty() || name.is_empty() || description.is_empty() {
+            return Err("plugin id, prefix, name, and description must not be empty".into());
+        }
+        // SAFETY: create is a valid ABI v1 callback from the still-live library.
+        let state = unsafe { create() };
+        if state.is_null() {
+            return Err("plugin initialization failed".into());
+        }
+        Ok(Self {
+            _library: library,
+            api,
+            state,
+            id,
+            prefix,
+            name,
+            description,
+        })
+    }
+
+    fn response_json(&self, pointer: *mut c_char) -> Option<String> {
+        if pointer.is_null() {
+            return None;
+        }
+        // SAFETY: The plugin contract returns an owned NUL-terminated string and its matching
+        // free_json callback releases it. The library is kept alive by self.
+        let response = unsafe { CStr::from_ptr(pointer) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: pointer was returned by this same plugin instance and must be freed there.
+        unsafe { (self.api.free_json.unwrap())(pointer) };
+        Some(response)
+    }
+}
+
+impl Drop for DynamicPlugin {
+    fn drop(&mut self) {
+        if !self.state.is_null() {
+            // SAFETY: state came from create and destroy is from the same loaded library.
+            unsafe { (self.api.destroy.unwrap())(self.state) };
+            self.state = std::ptr::null_mut();
+        }
+    }
+}
+
+/// Copy ABI metadata into host-owned UTF-8 storage.
+///
+/// # Safety
+/// `pointer` must be null or point to a valid NUL-terminated string for the duration of the call.
+unsafe fn copy_c_string(pointer: *const c_char) -> Option<String> {
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: Caller guarantees the ABI metadata pointer is a valid static C string.
+    Some(
+        unsafe { CStr::from_ptr(pointer) }
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+impl Plugin for DynamicPlugin {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn prefix(&self) -> &str {
+        &self.prefix
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        let Ok(query) = CString::new(query) else {
+            return Vec::new();
+        };
+        // SAFETY: query is NUL-terminated and the state belongs to this plugin library.
+        let pointer = unsafe { (self.api.search.unwrap())(self.state, query.as_ptr()) };
+        let Some(response) = self.response_json(pointer) else {
+            return Vec::new();
+        };
+        serde_json::from_str::<Vec<waymenu_plugin_api::PluginResult>>(&response)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|result| SearchResult {
+                id: result.id,
+                title: result.title,
+                description: result.description,
+                score: result.score,
+                icon: result.icon,
+                image: result.image,
+                metadata: result.metadata,
+            })
+            .collect()
+    }
+    fn action(&self, result: &SearchResult) -> Action {
+        let Ok(id) = CString::new(result.id.as_str()) else {
+            return Action::None;
+        };
+        // SAFETY: id is NUL-terminated and the state belongs to this plugin library.
+        let pointer = unsafe { (self.api.action.unwrap())(self.state, id.as_ptr()) };
+        let Some(response) = self.response_json(pointer) else {
+            return Action::None;
+        };
+        let Ok(action) = serde_json::from_str::<waymenu_plugin_api::PluginAction>(&response) else {
+            return Action::None;
+        };
+        match action {
+            waymenu_plugin_api::PluginAction::LaunchApplication(id) => {
+                Action::LaunchApplication(id)
+            }
+            waymenu_plugin_api::PluginAction::LaunchBinary(path) => Action::LaunchBinary(path),
+            waymenu_plugin_api::PluginAction::RunShell(command) => Action::RunShell(command),
+            waymenu_plugin_api::PluginAction::CopyText(text) => Action::CopyText(text),
+            waymenu_plugin_api::PluginAction::None => Action::None,
+        }
     }
 }
 
@@ -153,14 +398,17 @@ impl ShellPlugin {
     }
 }
 impl Plugin for ShellPlugin {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "shell"
     }
     fn prefix(&self) -> &str {
         &self.prefix
     }
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "Shell"
+    }
+    fn description(&self) -> &str {
+        "Run a shell command after explicit submission."
     }
     fn search(&self, query: &str) -> Vec<SearchResult> {
         if query.trim().is_empty() {
@@ -185,12 +433,36 @@ impl Plugin for ShellPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn manager_removes_known_prefix() {
         let manager = PluginManager::from_config(&Config::default());
         let (plugin, query) = manager.select("!printf test").unwrap();
         assert_eq!(plugin.id(), "shell");
         assert_eq!(query, "printf test");
+    }
+
+    #[test]
+    fn dynamic_plugins_are_optional_and_only_shared_objects_are_discovered() {
+        let directory =
+            std::env::temp_dir().join(format!("waymenu-plugins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("ignored.txt"), b"not a plugin").unwrap();
+        std::fs::write(directory.join("libzeta.so"), b"not loaded by discovery").unwrap();
+        std::fs::write(directory.join("libalpha.so"), b"not loaded by discovery").unwrap();
+
+        let plugins = discover_dynamic_plugins(&directory).unwrap();
+        assert_eq!(plugins[0].file_name().unwrap(), "libalpha.so");
+        assert_eq!(plugins[1].file_name().unwrap(), "libzeta.so");
+
+        let mut config = Config::default();
+        config.plugins.dynamic = false;
+        let manager = PluginManager::from_config_at(&config, &directory);
+        assert_eq!(manager.plugins.len(), 1);
+        assert!(manager.select("=2+2").is_none());
+        assert_eq!(manager.select("!pwd").unwrap().0.id(), "shell");
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn cancellable_executor_captures_stdout() {

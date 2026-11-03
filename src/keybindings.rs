@@ -71,5 +71,8 @@ mod tests {
         assert!(Binding::parse("Down")
             .unwrap()
             .matches(Keysym::Down, Modifiers::default()));
+        assert!(Binding::parse("F1")
+            .unwrap()
+            .matches(Keysym::F1, Modifiers::default()));
     }
 }

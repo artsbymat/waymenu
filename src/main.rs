@@ -1,7 +1,7 @@
 use std::{
     env,
-    io::{self, BufRead},
-    process::{Command, ExitCode},
+    io::{self, BufRead, Write},
+    process::{Command, ExitCode, Stdio},
 };
 use waymenu::{
     applications, binary, config::Config, history::History, search, Action, SearchResult,
@@ -81,7 +81,8 @@ fn execute_action(action: Action, config: &Config) -> Result<(), Box<dyn std::er
                 .unwrap_or_else(|| "/bin/sh".into());
             Command::new(shell).args(["-c", &command]).spawn()?;
         }
-        Action::CopyText(_) | Action::None => {}
+        Action::CopyText(text) => copy_to_clipboard(&text)?,
+        Action::None => {}
     }
     Ok(())
 }
@@ -115,6 +116,11 @@ fn dispatch(query: &str, config: &Config) -> Result<(), Box<dyn std::error::Erro
         print_results(matches);
         return Ok(());
     }
+    let plugin_manager = waymenu::plugins::PluginManager::from_config(config);
+    if let Some((plugin, plugin_query)) = plugin_manager.select(query) {
+        print_results(plugin.search(plugin_query));
+        return Ok(());
+    }
     let mut history = History::load_with_limit(config.history.max_entries);
     let applications = applications::discover();
     let results: Vec<_> = applications
@@ -146,6 +152,29 @@ fn dispatch(query: &str, config: &Config) -> Result<(), Box<dyn std::error::Erro
         }
     }
     Ok(())
+}
+
+fn copy_to_clipboard(text: &str) -> io::Result<()> {
+    let mut child = Command::new("wl-copy")
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("could not start wl-copy to copy plugin result: {error}"),
+            )
+        })?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "wl-copy exited with status {status}"
+        )))
+    }
 }
 
 fn print_results(results: Vec<SearchResult>) {

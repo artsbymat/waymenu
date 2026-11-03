@@ -21,6 +21,27 @@ Use `$` for executables and `!` for the shell plugin. Both prefixes are configur
 Executable discovery is performed off the UI thread and cached only for the current
 process. Shell commands run only after Enter; their stdout/stderr is shown inside the
 launcher and Esc cancels a running child.
+Press F1 in the launcher to view the active keybindings and installed plugin names,
+prefixes, IDs, and descriptions. The help key can be changed in `[keybindings] help`.
+
+Optional native plugins are loaded from `$XDG_CONFIG_HOME/waymenu/plugins` (or
+`~/.config/waymenu/plugins`). Dynamic loading is enabled by default and can be disabled
+with `[plugins] dynamic = false`. No `.so` is needed for the normal launcher or shell
+plugin. Native plugins execute in the launcher process, so only install plugins you trust.
+
+The Rink calculator and unit-conversion plugin is built separately and uses the `=`
+prefix. It is not a dependency of the Waymenu executable:
+
+```sh
+cargo build --manifest-path plugins/rink/Cargo.toml --release
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins"
+cp plugins/rink/target/release/librink.so \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins/"
+```
+
+Then enter expressions such as `=2+2` or `=1 mile -> km`; Enter copies the result with
+`wl-copy`. For development, `WAYMENU_PLUGIN_DIR=/path/to/plugins` overrides the plugin
+directory. The plugin SDK and ABI v2 contract are in `plugin-api/`.
 
 ```sh
 cargo run --release -- --mode binary

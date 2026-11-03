@@ -5,6 +5,11 @@ edition = "2021"
 license = "MIT"
 description = "A small, keyboard-driven Wayland launcher"
 
+[workspace]
+members = ["plugin-api"]
+exclude = ["plugins/rink"]
+resolver = "2"
+
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
@@ -16,9 +21,11 @@ calloop-wayland-source = "0.3.0"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 resvg = { version = "0.45.1", default-features = false }
 libc = "0.2.191"
+libloading = "0.8.9"
 smithay-client-toolkit = "0.19.2"
 tiny-skia = "0.11.4"
 wayland-client = "0.31.12"
+waymenu-plugin-api = { path = "plugin-api" }
 
 [profile.release]
 strip = true

@@ -1,0 +1,14 @@
+[package]
+name = "waymenu-rink-plugin"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "rink"
+crate-type = ["cdylib"]
+
+[dependencies]
+rink-core = { version = "0.9", features = ["bundle-files", "serde_json"] }
+waymenu-plugin-api = { path = "../../plugin-api" }

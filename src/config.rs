@@ -38,6 +38,7 @@ pub struct Appearance {
 pub struct Plugins {
     pub shell_prefix: String,
     pub shell: Option<String>,
+    pub dynamic: bool,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
@@ -66,6 +67,7 @@ pub struct Keybindings {
     pub delete_word: String,
     pub beginning: String,
     pub end: String,
+    pub help: String,
 }
 
 impl Default for General {
@@ -98,6 +100,7 @@ impl Default for Plugins {
         Self {
             shell_prefix: "!".into(),
             shell: None,
+            dynamic: true,
         }
     }
 }
@@ -132,6 +135,7 @@ impl Default for Keybindings {
             delete_word: "Ctrl+w".into(),
             beginning: "Ctrl+a".into(),
             end: "Ctrl+e".into(),
+            help: "F1".into(),
         }
     }
 }
@@ -231,7 +235,7 @@ impl Config {
 }
 
 impl Keybindings {
-    pub fn all(&self) -> [&str; 12] {
+    pub fn all(&self) -> [&str; 13] {
         [
             &self.execute,
             &self.close,
@@ -245,16 +249,21 @@ impl Keybindings {
             &self.delete_word,
             &self.beginning,
             &self.end,
+            &self.help,
         ]
     }
 }
 
 fn config_path() -> PathBuf {
+    config_dir().join("config.toml")
+}
+
+pub fn config_dir() -> PathBuf {
     env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("waymenu/config.toml")
+        .join("waymenu")
 }
 
 #[derive(Debug, thiserror::Error)]

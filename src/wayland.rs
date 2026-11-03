@@ -206,7 +206,23 @@ impl State {
     fn handle_key(&mut self, event: KeyEvent) {
         let key = event.keysym;
         let modifiers = self.modifiers;
-        if self.bindings.close.matches(key, modifiers) {
+        if self.bindings.help.matches(key, modifiers) && !self.model.is_help_mode() {
+            self.model.toggle_help();
+        } else if self.model.is_help_mode() {
+            if self.bindings.close.matches(key, modifiers) {
+                self.model.exit = true;
+            } else if self.bindings.help.matches(key, modifiers) {
+                self.model.toggle_help();
+            } else if self.bindings.next.matches(key, modifiers)
+                || self.bindings.next_arrow.matches(key, modifiers)
+            {
+                self.model.next();
+            } else if self.bindings.previous.matches(key, modifiers)
+                || self.bindings.previous_arrow.matches(key, modifiers)
+            {
+                self.model.previous();
+            }
+        } else if self.bindings.close.matches(key, modifiers) {
             if let Some(cancel) = &self.shell_cancel {
                 cancel.store(true, std::sync::atomic::Ordering::Release);
             }
@@ -509,6 +525,7 @@ struct RuntimeBindings {
     delete_word: Binding,
     beginning: Binding,
     end: Binding,
+    help: Binding,
 }
 
 impl RuntimeBindings {
@@ -530,6 +547,7 @@ impl RuntimeBindings {
             delete_word: parse(&value.delete_word)?,
             beginning: parse(&value.beginning)?,
             end: parse(&value.end)?,
+            help: parse(&value.help)?,
         })
     }
 }

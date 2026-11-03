@@ -19,6 +19,7 @@ pub struct UiModel {
     pub exit: bool,
     pub prompt: String,
     selection_moved_down: bool,
+    help_mode: bool,
     password: bool,
     cursor: usize,
     config: Config,
@@ -57,6 +58,7 @@ impl UiModel {
             exit: false,
             prompt: "Search applications…".into(),
             selection_moved_down: false,
+            help_mode: false,
             password: false,
             cursor: 0,
             config,
@@ -101,6 +103,7 @@ impl UiModel {
             exit: false,
             prompt,
             selection_moved_down: false,
+            help_mode: false,
             password,
             cursor,
             config,
@@ -157,6 +160,9 @@ impl UiModel {
         }
     }
     pub fn autocomplete(&mut self) {
+        if self.help_mode {
+            return;
+        }
         if let Some(item) = self.results.get(self.selected) {
             self.input = if self.dmenu.is_some() {
                 item.title.clone()
@@ -191,8 +197,26 @@ impl UiModel {
         self.cursor = self.input.len();
     }
 
+    pub fn toggle_help(&mut self) {
+        if self.dmenu.is_some() {
+            return;
+        }
+        self.help_mode = !self.help_mode;
+        self.refresh();
+    }
+
+    pub fn is_help_mode(&self) -> bool {
+        self.help_mode
+    }
+
+    pub fn help_binding(&self) -> &str {
+        &self.config.keybindings.help
+    }
+
     fn displayed_input(&self) -> std::borrow::Cow<'_, str> {
-        if self.input.is_empty() {
+        if self.help_mode {
+            std::borrow::Cow::Borrowed("Help · Keybindings and plugins")
+        } else if self.input.is_empty() {
             std::borrow::Cow::Borrowed(&self.prompt)
         } else if self.password {
             std::borrow::Cow::Owned("•".repeat(self.input.chars().count()))
@@ -202,6 +226,9 @@ impl UiModel {
     }
 
     fn highlight_query(&self) -> &str {
+        if self.help_mode {
+            return "";
+        }
         if self.dmenu.is_some() {
             return &self.input;
         }
@@ -212,6 +239,9 @@ impl UiModel {
     }
 
     pub fn selected_action(&self) -> Action {
+        if self.help_mode {
+            return Action::None;
+        }
         if let Some(dmenu) = &self.dmenu {
             if self.password {
                 return Action::None;
@@ -333,6 +363,10 @@ impl UiModel {
     fn refresh(&mut self) {
         self.selected = 0;
         self.selection_moved_down = false;
+        if self.help_mode {
+            self.results = self.help_results();
+            return;
+        }
         if let Some(dmenu) = &self.dmenu {
             if self.input.is_empty() {
                 self.results = dmenu.items.clone();
@@ -403,6 +437,107 @@ impl UiModel {
             })
             .collect();
         self.results = search::filter(&candidates, &self.input, usize::MAX);
+    }
+
+    fn help_results(&self) -> Vec<SearchResult> {
+        let keybindings = &self.config.keybindings;
+        let mut rows = vec![
+            help_row(
+                "provider-applications",
+                "Applications · default mode",
+                "Search installed desktop applications without a prefix.",
+            ),
+            help_row(
+                "provider-binaries",
+                &format!("{} · Binary search", self.config.binary.prefix),
+                "Search executable files available through PATH.",
+            ),
+        ];
+        let plugins = self
+            .plugins
+            .as_ref()
+            .map(PluginManager::metadata)
+            .unwrap_or_default();
+        let dynamic_count = plugins.iter().filter(|plugin| plugin.id != "shell").count();
+        rows.extend(plugins.into_iter().map(|plugin| {
+            help_row(
+                &format!("plugin-{}", plugin.id),
+                &format!("{} · {}", plugin.prefix, plugin.name),
+                &format!("{}  (id: {})", plugin.description, plugin.id),
+            )
+        }));
+        if dynamic_count == 0 {
+            rows.push(help_row(
+                "plugins-none",
+                "No dynamic plugins installed",
+                &format!(
+                    "Put .so plugins in {}",
+                    crate::config::config_dir().join("plugins").display()
+                ),
+            ));
+        }
+        rows.extend(
+            [
+                (
+                    "execute",
+                    "Execute selected result",
+                    keybindings.execute.as_str(),
+                ),
+                ("close", "Close launcher", keybindings.close.as_str()),
+                (
+                    "autocomplete",
+                    "Complete selected result",
+                    keybindings.autocomplete.as_str(),
+                ),
+                ("next", "Next result", keybindings.next.as_str()),
+                ("previous", "Previous result", keybindings.previous.as_str()),
+                ("next-arrow", "Next result", keybindings.next_arrow.as_str()),
+                (
+                    "previous-arrow",
+                    "Previous result",
+                    keybindings.previous_arrow.as_str(),
+                ),
+                ("clear", "Clear input", keybindings.clear.as_str()),
+                (
+                    "backspace",
+                    "Delete previous character",
+                    keybindings.backspace.as_str(),
+                ),
+                (
+                    "delete-word",
+                    "Delete previous word",
+                    keybindings.delete_word.as_str(),
+                ),
+                (
+                    "beginning",
+                    "Move cursor to beginning",
+                    keybindings.beginning.as_str(),
+                ),
+                ("end", "Move cursor to end", keybindings.end.as_str()),
+                ("help", "Toggle this help", keybindings.help.as_str()),
+            ]
+            .into_iter()
+            .map(|(id, action, key)| {
+                help_row(
+                    &format!("key-{id}"),
+                    &format!("{key} · {action}"),
+                    "Keyboard shortcut",
+                )
+            }),
+        );
+        rows
+    }
+}
+
+fn help_row(id: &str, title: &str, description: &str) -> SearchResult {
+    SearchResult {
+        id: id.to_owned(),
+        title: title.to_owned(),
+        description: description.to_owned(),
+        score: 0,
+        icon: None,
+        image: None,
+        metadata: Some("help".into()),
     }
 }
 
@@ -563,9 +698,17 @@ impl Renderer {
                 }
             }
         }
+        let footer = if model.is_help_mode() {
+            format!(
+                "Up/Down Scroll     {} Back     Esc Close Launcher",
+                model.help_binding()
+            )
+        } else {
+            "Up/Down Navigate     Tab Complete     Enter Open     F1 Help     Esc Close".into()
+        };
         self.text(
             &mut pixmap,
-            "Up/Down Navigate     Tab Complete     Enter Open     Esc Close",
+            &footer,
             20.0,
             height as f32 - 16.0,
             11.0,
@@ -1292,6 +1435,30 @@ mod tests {
         }
         assert_eq!(model.selected, 7);
         assert_eq!(model.results[model.selected].title, "App 7");
+    }
+
+    #[test]
+    fn f1_help_shows_configured_bindings_and_loaded_plugin_metadata() {
+        let mut model = UiModel::new(Config::default());
+        model.insert("fire");
+        model.toggle_help();
+        assert!(model.is_help_mode());
+        assert_eq!(model.input, "fire");
+        assert!(model
+            .results
+            .iter()
+            .any(|row| row.title.contains("F1 · Toggle this help")));
+        assert!(model
+            .results
+            .iter()
+            .any(|row| row.title.contains("! · Shell")));
+        assert!(model
+            .results
+            .iter()
+            .any(|row| row.title.contains("$ · Binary search")));
+        model.toggle_help();
+        assert!(!model.is_help_mode());
+        assert_eq!(model.input, "fire");
     }
 
     #[test]
