@@ -540,6 +540,32 @@ mod tests {
     }
 
     #[test]
+    fn loads_and_executes_built_youtube_plugin() {
+        let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/youtube/target/release/libyoutube.so");
+        if !so_path.exists() {
+            return;
+        }
+        let plugin = DynamicPlugin::load(&so_path).unwrap();
+        assert_eq!(plugin.id(), "youtube");
+        assert_eq!(plugin.prefix(), "yt ");
+
+        let results = plugin.search("hyprland linux");
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].id,
+            "https://www.youtube.com/results?search_query=hyprland+linux"
+        );
+        assert_eq!(results[0].title, "Search YouTube for \"hyprland linux\"");
+
+        let action = plugin.action(&results[0]);
+        assert_eq!(
+            action,
+            Action::OpenUrl("https://www.youtube.com/results?search_query=hyprland+linux".into())
+        );
+    }
+
+    #[test]
     fn dynamic_plugins_are_optional_and_only_shared_objects_are_discovered() {
         let directory =
             std::env::temp_dir().join(format!("waymenu-plugins-{}", std::process::id()));

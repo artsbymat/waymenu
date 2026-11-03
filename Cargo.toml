@@ -7,7 +7,7 @@ description = "A small, keyboard-driven Wayland launcher"
 
 [workspace]
 members = ["plugin-api"]
-exclude = ["plugins/rink", "plugins/google"]
+exclude = ["plugins/rink", "plugins/google", "plugins/youtube"]
 resolver = "2"
 
 [dependencies]
