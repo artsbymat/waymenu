@@ -159,6 +159,31 @@ impl UiModel {
             self.selection_moved_down = false;
         }
     }
+    pub fn select(&mut self, index: usize) {
+        if index < self.results.len() {
+            self.selection_moved_down = index >= self.selected;
+            self.selected = index;
+        }
+    }
+    pub fn scroll_down(&mut self) {
+        self.scroll_down_by(1);
+    }
+    pub fn scroll_up(&mut self) {
+        self.scroll_up_by(1);
+    }
+    pub fn scroll_down_by(&mut self, steps: usize) {
+        if !self.results.is_empty() {
+            let max_index = self.results.len() - 1;
+            self.selected = (self.selected + steps).min(max_index);
+            self.selection_moved_down = true;
+        }
+    }
+    pub fn scroll_up_by(&mut self, steps: usize) {
+        if !self.results.is_empty() {
+            self.selected = self.selected.saturating_sub(steps);
+            self.selection_moved_down = false;
+        }
+    }
     pub fn autocomplete(&mut self) {
         if self.help_mode {
             return;
@@ -604,6 +629,36 @@ impl Renderer {
             first_visible: 0,
         })
     }
+
+    pub fn first_visible(&self) -> usize {
+        self.first_visible
+    }
+
+    pub fn item_at(
+        &self,
+        x: f64,
+        y: f64,
+        width: u32,
+        height: u32,
+        total_results: usize,
+    ) -> Option<usize> {
+        if x < 0.0 || x > width as f64 {
+            return None;
+        }
+        if y < 72.0 {
+            return None;
+        }
+        let visible = ((height.saturating_sub(110)) / 58).max(1) as usize;
+        let row = ((y - 72.0) / 58.0) as usize;
+        if row < visible {
+            let index = self.first_visible + row;
+            if index < total_results {
+                return Some(index);
+            }
+        }
+        None
+    }
+
     pub fn draw(&mut self, canvas: &mut [u8], width: u32, height: u32, model: &UiModel) {
         let Some(mut pixmap) = PixmapMut::from_bytes(canvas, width, height) else {
             return;
@@ -1522,5 +1577,91 @@ mod tests {
         );
         assert_eq!(model.selected_action(), Action::None);
         assert_eq!(model.displayed_input(), "•••••••••");
+    }
+
+    #[test]
+    fn mouse_click_item_at_coordinates_identifies_clicked_result() {
+        let config = Config::default();
+        let mut renderer = Renderer::new(&config).unwrap();
+        let width = 640;
+        let height = 400; // visible = (400 - 110) / 58 = 5 rows
+        let total = 10;
+
+        // Above item area (e.g. search bar)
+        assert_eq!(renderer.item_at(50.0, 50.0, width, height, total), None);
+
+        // Outside width bounds
+        assert_eq!(renderer.item_at(-5.0, 80.0, width, height, total), None);
+        assert_eq!(renderer.item_at(700.0, 80.0, width, height, total), None);
+
+        // First visible row (row 0: 72..130)
+        assert_eq!(renderer.item_at(50.0, 75.0, width, height, total), Some(0));
+        assert_eq!(renderer.item_at(50.0, 120.0, width, height, total), Some(0));
+
+        // Second visible row (row 1: 130..188)
+        assert_eq!(renderer.item_at(50.0, 135.0, width, height, total), Some(1));
+
+        // Last visible row (row 4: 72 + 4 * 58 = 304..362)
+        assert_eq!(renderer.item_at(50.0, 310.0, width, height, total), Some(4));
+
+        // Below visible rows / footer
+        assert_eq!(renderer.item_at(50.0, 370.0, width, height, total), None);
+
+        // When total results is less than visible rows
+        assert_eq!(renderer.item_at(50.0, 135.0, width, height, 1), None);
+
+        // When first_visible is scrolled
+        renderer.first_visible = 3;
+        assert_eq!(renderer.item_at(50.0, 75.0, width, height, total), Some(3));
+        assert_eq!(renderer.item_at(50.0, 135.0, width, height, total), Some(4));
+    }
+
+    #[test]
+    fn ui_model_select_and_scroll_clamp_without_wrapping() {
+        let mut model = UiModel::dmenu(
+            Config::default(),
+            (0..5).map(|i| format!("item-{i}")).collect(),
+            DmenuModelOptions {
+                prompt: "Pick".into(),
+                initial_query: String::new(),
+                print_query: false,
+                fuzzy: false,
+                case_sensitive: false,
+                password: false,
+            },
+        );
+
+        assert_eq!(model.selected, 0);
+
+        // Direct select
+        model.select(3);
+        assert_eq!(model.selected, 3);
+        assert!(model.selection_moved_down);
+
+        // Direct select out of bounds is ignored
+        model.select(10);
+        assert_eq!(model.selected, 3);
+
+        // Scroll down
+        model.scroll_down();
+        assert_eq!(model.selected, 4);
+
+        // Scroll down at end clamps, does not wrap
+        model.scroll_down();
+        assert_eq!(model.selected, 4);
+        model.scroll_down_by(10);
+        assert_eq!(model.selected, 4);
+
+        // Scroll up
+        model.scroll_up();
+        assert_eq!(model.selected, 3);
+        assert!(!model.selection_moved_down);
+
+        model.scroll_up_by(2);
+        assert_eq!(model.selected, 1);
+
+        // Scroll up at beginning clamps, does not wrap
+        model.scroll_up_by(5);
+        assert_eq!(model.selected, 0);
     }
 }

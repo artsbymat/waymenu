@@ -2,13 +2,14 @@ use calloop::{channel, EventLoop, LoopHandle};
 use calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_registry,
-    delegate_seat, delegate_shm,
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
+        pointer::{AxisScroll, PointerEvent, PointerEventKind, PointerHandler, BTN_LEFT},
         Capability, SeatHandler, SeatState,
     },
     shell::{
@@ -22,7 +23,7 @@ use smithay_client_toolkit::{
 };
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
     Connection, QueueHandle,
 };
 
@@ -105,6 +106,8 @@ fn run_model(model: UiModel, config: Config) -> Result<Action, Box<dyn std::erro
         height,
         configured: false,
         keyboard: None,
+        pointer: None,
+        scroll_accumulator: 0.0,
         modifiers: Modifiers::default(),
         bindings,
         model,
@@ -184,6 +187,8 @@ struct State {
     height: u32,
     configured: bool,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<wl_pointer::WlPointer>,
+    scroll_accumulator: f64,
     modifiers: Modifiers,
     bindings: RuntimeBindings,
     model: UiModel,
@@ -264,6 +269,36 @@ impl State {
         }
     }
 
+    fn handle_click(&mut self, x: f64, y: f64) {
+        let Some(index) =
+            self.renderer
+                .item_at(x, y, self.width, self.height, self.model.results.len())
+        else {
+            return;
+        };
+        self.model.select(index);
+        if self.model.is_help_mode() {
+            if self.configured {
+                self.draw();
+            }
+        } else {
+            self.execute_selection();
+        }
+    }
+
+    fn handle_axis(&mut self, vertical: AxisScroll) {
+        let steps = calculate_axis_scroll(&mut self.scroll_accumulator, vertical);
+        if steps > 0 {
+            self.model.scroll_down_by(steps as usize);
+        } else if steps < 0 {
+            self.model.scroll_up_by((-steps) as usize);
+        }
+        self.maybe_start_binary_scan();
+        if self.configured {
+            self.draw();
+        }
+    }
+
     fn find_output(&self, requested: &str) -> Option<wl_output::WlOutput> {
         let outputs: Vec<_> = self.output_state.outputs().collect();
         if let Ok(index) = requested.parse::<usize>() {
@@ -337,6 +372,32 @@ impl State {
             let _ = sender.send(WorkerMessage::Binaries(crate::binary::discover()));
         });
     }
+}
+
+fn calculate_axis_scroll(accumulator: &mut f64, vertical: AxisScroll) -> i32 {
+    if vertical.discrete != 0 {
+        *accumulator = 0.0;
+        return vertical.discrete;
+    }
+    if vertical.stop {
+        *accumulator = 0.0;
+        return 0;
+    }
+    if vertical.absolute != 0.0 {
+        *accumulator += vertical.absolute;
+        const SCROLL_THRESHOLD: f64 = 15.0;
+        let mut steps = 0;
+        while *accumulator >= SCROLL_THRESHOLD {
+            steps += 1;
+            *accumulator -= SCROLL_THRESHOLD;
+        }
+        while *accumulator <= -SCROLL_THRESHOLD {
+            steps -= 1;
+            *accumulator += SCROLL_THRESHOLD;
+        }
+        return steps;
+    }
+    0
 }
 
 fn convert_rgba_to_wayland_argb8888(canvas: &mut [u8]) {
@@ -442,6 +503,9 @@ impl SeatHandler for State {
                 )
                 .ok();
         }
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
+        }
     }
     fn remove_capability(
         &mut self,
@@ -453,6 +517,11 @@ impl SeatHandler for State {
         if capability == Capability::Keyboard {
             if let Some(keyboard) = self.keyboard.take() {
                 keyboard.release();
+            }
+        }
+        if capability == Capability::Pointer {
+            if let Some(pointer) = self.pointer.take() {
+                pointer.release();
             }
         }
     }
@@ -512,6 +581,35 @@ impl KeyboardHandler for State {
     }
 }
 
+impl PointerHandler for State {
+    fn pointer_frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        for event in events {
+            if let Some(layer) = &self.layer {
+                if &event.surface != layer.wl_surface() {
+                    continue;
+                }
+            }
+            match &event.kind {
+                PointerEventKind::Press { button, .. } => {
+                    if *button == BTN_LEFT {
+                        self.handle_click(event.position.0, event.position.1);
+                    }
+                }
+                PointerEventKind::Axis { vertical, .. } => {
+                    self.handle_axis(*vertical);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 struct RuntimeBindings {
     execute: Binding,
     close: Binding,
@@ -562,6 +660,7 @@ delegate_output!(State);
 delegate_shm!(State);
 delegate_seat!(State);
 delegate_keyboard!(State);
+delegate_pointer!(State);
 delegate_layer!(State);
 delegate_registry!(State);
 impl ProvidesRegistryState for State {
@@ -573,7 +672,7 @@ impl ProvidesRegistryState for State {
 
 #[cfg(test)]
 mod tests {
-    use super::convert_rgba_to_wayland_argb8888;
+    use super::{calculate_axis_scroll, convert_rgba_to_wayland_argb8888, AxisScroll};
 
     #[test]
     fn renderer_pixels_are_swizzled_for_wayland_shm_channel_order() {
@@ -583,5 +682,66 @@ mod tests {
         assert_eq!(pixel, [30, 20, 10, 255]);
         #[cfg(target_endian = "big")]
         assert_eq!(pixel, [255, 10, 20, 30]);
+    }
+
+    #[test]
+    fn axis_scroll_prioritizes_discrete_notches() {
+        let mut acc = 5.0;
+        let event = AxisScroll {
+            absolute: 15.0,
+            discrete: 2,
+            stop: false,
+        };
+        assert_eq!(calculate_axis_scroll(&mut acc, event), 2);
+        assert_eq!(acc, 0.0);
+
+        let event_up = AxisScroll {
+            absolute: -15.0,
+            discrete: -1,
+            stop: false,
+        };
+        assert_eq!(calculate_axis_scroll(&mut acc, event_up), -1);
+        assert_eq!(acc, 0.0);
+    }
+
+    #[test]
+    fn axis_scroll_accumulates_continuous_delta_and_resets_on_stop() {
+        let mut acc = 0.0;
+
+        // Small movement below threshold
+        let ev1 = AxisScroll {
+            absolute: 10.0,
+            discrete: 0,
+            stop: false,
+        };
+        assert_eq!(calculate_axis_scroll(&mut acc, ev1), 0);
+        assert_eq!(acc, 10.0);
+
+        // Movement crossing threshold
+        let ev2 = AxisScroll {
+            absolute: 8.0,
+            discrete: 0,
+            stop: false,
+        };
+        assert_eq!(calculate_axis_scroll(&mut acc, ev2), 1);
+        assert_eq!(acc, 3.0); // 18.0 - 15.0 = 3.0
+
+        // Stop resets accumulator
+        let ev_stop = AxisScroll {
+            absolute: 0.0,
+            discrete: 0,
+            stop: true,
+        };
+        assert_eq!(calculate_axis_scroll(&mut acc, ev_stop), 0);
+        assert_eq!(acc, 0.0);
+
+        // Negative continuous scroll
+        let ev_neg = AxisScroll {
+            absolute: -16.0,
+            discrete: 0,
+            stop: false,
+        };
+        assert_eq!(calculate_axis_scroll(&mut acc, ev_neg), -1);
+        assert_eq!(acc, -1.0);
     }
 }
