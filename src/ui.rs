@@ -6,6 +6,7 @@ use std::{
 
 use ab_glyph::{point, Font, FontArc, PxScale, ScaleFont};
 use tiny_skia::{Color, Paint, PathBuilder, PixmapMut, Rect, Transform};
+use ttf_parser::{Face, RasterImageFormat};
 
 use crate::{
     applications::DesktopApplication, binary::Binary, config::Config, history::History,
@@ -632,6 +633,10 @@ fn help_row(id: &str, title: &str, description: &str) -> SearchResult {
 
 pub struct Renderer {
     font: Option<FontArc>,
+    fallback_font: Option<FontArc>,
+    emoji_font_data: Option<Vec<u8>>,
+    emoji_cache: HashMap<(char, u32), Option<IconBitmap>>,
+    emoji_order: VecDeque<(char, u32)>,
     icons: HashMap<String, Option<IconBitmap>>,
     icon_order: VecDeque<String>,
     theme: Theme,
@@ -682,8 +687,14 @@ impl Renderer {
                 "no usable TrueType/OpenType font was found",
             )
         })?;
+        let fallback_font = load_fallback_font();
+        let emoji_font_data = load_emoji_font_data();
         Ok(Self {
             font: Some(font),
+            fallback_font,
+            emoji_font_data,
+            emoji_cache: HashMap::new(),
+            emoji_order: VecDeque::new(),
             icons: HashMap::new(),
             icon_order: VecDeque::new(),
             theme,
@@ -707,17 +718,59 @@ impl Renderer {
     pub fn text_width(&self, text: &str, size: f32) -> f32 {
         let Some(font) = &self.font else { return 0.0 };
         let scaled = font.as_scaled(PxScale::from(size));
-        let mut width = 0.0;
+        let space_width = scaled.h_advance(scaled.glyph_id(' ')).max(size * 0.5);
+        let tab_size = 8.0 * space_width;
+        let mut x = 0.0;
         let mut previous = None;
-        for ch in text.chars().take(100) {
-            let id = scaled.glyph_id(ch);
-            if let Some(last) = previous {
-                width += scaled.kern(last, id);
+        for ch in text.chars() {
+            if ch == '\r'
+                || ('\u{fe00}'..='\u{fe0f}').contains(&ch)
+                || ('\u{e0100}'..='\u{e01ef}').contains(&ch)
+            {
+                continue;
             }
-            width += scaled.h_advance(id);
-            previous = Some(id);
+            if ch == '\n' {
+                x += space_width;
+                previous = None;
+                continue;
+            }
+            if ch == '\t' {
+                let next_tab = ((x / tab_size).floor() + 1.0) * tab_size;
+                x = next_tab;
+                previous = None;
+                continue;
+            }
+            if ch < ' ' {
+                continue;
+            }
+            if is_emoji(ch) {
+                x += (size * 1.05).round() + 2.0;
+                previous = None;
+                continue;
+            }
+            let id = scaled.glyph_id(ch);
+            if id.0 != 0 {
+                if let Some(last) = previous {
+                    x += scaled.kern(last, id);
+                }
+                x += scaled.h_advance(id);
+                previous = Some(id);
+            } else if let Some(fallback) = &self.fallback_font {
+                let f_scaled = fallback.as_scaled(PxScale::from(size));
+                let f_id = f_scaled.glyph_id(ch);
+                if f_id.0 != 0 {
+                    x += f_scaled.h_advance(f_id);
+                    previous = None;
+                } else {
+                    x += space_width;
+                    previous = None;
+                }
+            } else {
+                x += space_width;
+                previous = None;
+            }
         }
-        width
+        x
     }
 
     pub fn caret_x(&self, model: &UiModel) -> f32 {
@@ -835,19 +888,24 @@ impl Renderer {
             if let Some(visual) = visual.filter(|_| self.show_icons) {
                 self.draw_image(&mut pixmap, visual, 26, (y - 1.0) as i32, 36);
             }
+            let (title_y, desc_y) = if result.description.is_empty() || !self.show_description {
+                (y + 24.0, y + 24.0)
+            } else {
+                (y + 15.0, y + 35.0)
+            };
             self.text_highlight(
                 &mut pixmap,
                 &result.title,
-                (text_x, y + 15.0),
+                (text_x, title_y),
                 (self.font_size + 2.0, self.theme.primary),
                 model.highlight_query(),
             );
-            if self.show_description {
+            if self.show_description && !result.description.is_empty() {
                 self.text(
                     &mut pixmap,
                     &result.description,
                     text_x,
-                    y + 35.0,
+                    desc_y,
                     self.font_size.max(10.0) - 2.0,
                     self.theme.secondary,
                 );
@@ -916,8 +974,76 @@ impl Renderer {
         }
     }
 
+    fn draw_emoji(
+        &mut self,
+        pixmap: &mut PixmapMut<'_>,
+        ch: char,
+        x: i32,
+        y: i32,
+        size: u32,
+    ) -> bool {
+        let cache_key = (ch, size);
+        if !self.emoji_cache.contains_key(&cache_key) {
+            let bitmap = self.decode_emoji(ch, size);
+            if self.emoji_cache.len() >= 64 {
+                if let Some(oldest) = self.emoji_order.pop_front() {
+                    self.emoji_cache.remove(&oldest);
+                }
+            }
+            self.emoji_order.push_back(cache_key);
+            self.emoji_cache.insert(cache_key, bitmap);
+        }
+        let Some(Some(icon)) = self.emoji_cache.get(&cache_key) else {
+            return false;
+        };
+        for row in 0..icon.height {
+            for column in 0..icon.width {
+                let offset = ((row * icon.width + column) * 4) as usize;
+                let alpha = icon.pixels[offset + 3];
+                if alpha == 0 {
+                    continue;
+                }
+                blend(
+                    pixmap,
+                    x + column as i32,
+                    y + row as i32,
+                    [
+                        icon.pixels[offset],
+                        icon.pixels[offset + 1],
+                        icon.pixels[offset + 2],
+                        alpha,
+                    ],
+                    alpha as f32 / 255.0,
+                );
+            }
+        }
+        true
+    }
+
+    fn decode_emoji(&self, ch: char, size: u32) -> Option<IconBitmap> {
+        let data = self.emoji_font_data.as_ref()?;
+        let face = Face::parse(data, 0).ok()?;
+        let gid = face.glyph_index(ch)?;
+        let raster = face.glyph_raster_image(gid, (size * 2) as u16)?;
+        if raster.format != RasterImageFormat::PNG {
+            return None;
+        }
+        let dynamic_img = image::load_from_memory(raster.data).ok()?;
+        let resized = image::imageops::resize(
+            &dynamic_img,
+            size,
+            size,
+            image::imageops::FilterType::Triangle,
+        );
+        Some(IconBitmap {
+            width: size,
+            height: size,
+            pixels: resized.into_raw(),
+        })
+    }
+
     fn text(
-        &self,
+        &mut self,
         pixmap: &mut PixmapMut<'_>,
         text: &str,
         x: f32,
@@ -929,47 +1055,126 @@ impl Renderer {
     }
 
     fn text_highlight(
-        &self,
+        &mut self,
         pixmap: &mut PixmapMut<'_>,
         text: &str,
         position: (f32, f32),
         style: (f32, [u8; 4]),
         query: &str,
     ) {
-        let (mut x, baseline) = position;
+        let (start_x, baseline) = position;
+        let mut x = start_x;
         let (size, color) = style;
-        let Some(font) = &self.font else { return };
+        let Some(font) = self.font.clone() else {
+            return;
+        };
+        let fallback_font = self.fallback_font.clone();
         let scaled = font.as_scaled(PxScale::from(size));
+        let space_width = scaled.h_advance(scaled.glyph_id(' ')).max(size * 0.5);
+        let tab_size = 8.0 * space_width;
         let mut previous = None;
         let query = query.to_lowercase();
         let mut needles = query.chars().peekable();
-        for ch in text.chars().take(100) {
-            let id = scaled.glyph_id(ch);
-            if let Some(last) = previous {
-                x += scaled.kern(last, id);
+        let max_x = pixmap.width() as f32 - 10.0;
+        let emoji_size = (size * 1.05).round() as u32;
+
+        for ch in text.chars() {
+            if x >= max_x {
+                break;
             }
-            let glyph = id.with_scale_and_position(size, point(x, baseline));
-            if let Some(outline) = font.outline_glyph(glyph) {
-                let bounds = outline.px_bounds();
-                let matched = needles
-                    .peek()
-                    .is_some_and(|needle| ch.to_lowercase().next() == Some(*needle));
-                if matched {
-                    needles.next();
+            if ch == '\r'
+                || ('\u{fe00}'..='\u{fe0f}').contains(&ch)
+                || ('\u{e0100}'..='\u{e01ef}').contains(&ch)
+            {
+                continue;
+            }
+            if ch == '\n' {
+                x += space_width;
+                previous = None;
+                continue;
+            }
+            if ch == '\t' {
+                let rel_x = x - start_x;
+                let next_tab = ((rel_x / tab_size).floor() + 1.0) * tab_size;
+                x = start_x + next_tab;
+                previous = None;
+                continue;
+            }
+            if ch < ' ' {
+                continue;
+            }
+            let matched = needles
+                .peek()
+                .is_some_and(|needle| ch.to_lowercase().next() == Some(*needle));
+            if matched {
+                needles.next();
+            }
+            let glyph_color = if matched { [105, 170, 255, 255] } else { color };
+
+            if is_emoji(ch) {
+                let emoji_y = (baseline - size * 0.82).round() as i32;
+                if self.draw_emoji(pixmap, ch, x.round() as i32, emoji_y, emoji_size) {
+                    x += emoji_size as f32 + 2.0;
+                    previous = None;
+                    continue;
                 }
-                let glyph_color = if matched { [105, 170, 255, 255] } else { color };
-                outline.draw(|gx, gy, coverage| {
-                    blend(
-                        pixmap,
-                        bounds.min.x as i32 + gx as i32,
-                        bounds.min.y as i32 + gy as i32,
-                        glyph_color,
-                        coverage,
-                    );
-                });
             }
-            x += scaled.h_advance(id);
-            previous = Some(id);
+
+            let id = scaled.glyph_id(ch);
+            if id.0 != 0 {
+                if let Some(last) = previous {
+                    x += scaled.kern(last, id);
+                }
+                let glyph = id.with_scale_and_position(size, point(x, baseline));
+                if let Some(outline) = font.outline_glyph(glyph) {
+                    let bounds = outline.px_bounds();
+                    outline.draw(|gx, gy, coverage| {
+                        blend(
+                            pixmap,
+                            bounds.min.x as i32 + gx as i32,
+                            bounds.min.y as i32 + gy as i32,
+                            glyph_color,
+                            coverage,
+                        );
+                    });
+                }
+                x += scaled.h_advance(id);
+                previous = Some(id);
+            } else {
+                let emoji_y = (baseline - size * 0.82).round() as i32;
+                if self.draw_emoji(pixmap, ch, x.round() as i32, emoji_y, emoji_size) {
+                    x += emoji_size as f32 + 2.0;
+                    previous = None;
+                    continue;
+                }
+                if let Some(fallback) = &fallback_font {
+                    let f_scaled = fallback.as_scaled(PxScale::from(size));
+                    let f_id = f_scaled.glyph_id(ch);
+                    if f_id.0 != 0 {
+                        let glyph = f_id.with_scale_and_position(size, point(x, baseline));
+                        if let Some(outline) = fallback.outline_glyph(glyph) {
+                            let bounds = outline.px_bounds();
+                            outline.draw(|gx, gy, coverage| {
+                                blend(
+                                    pixmap,
+                                    bounds.min.x as i32 + gx as i32,
+                                    bounds.min.y as i32 + gy as i32,
+                                    glyph_color,
+                                    coverage,
+                                );
+                            });
+                        }
+                        x += f_scaled.h_advance(f_id);
+                        previous = None;
+                    } else {
+                        x += space_width;
+                        previous = None;
+                    }
+                } else {
+                    x += space_width;
+                    previous = None;
+                }
+            }
         }
     }
 }
@@ -1040,6 +1245,81 @@ fn load_font(family: &str) -> Option<FontArc> {
         .iter()
         .find_map(|path| read_font(Path::new(path)))
         .or_else(find_any_system_font)
+}
+
+fn load_fallback_font() -> Option<FontArc> {
+    let matched = std::process::Command::new("fc-match")
+        .args(["-f", "%{file}", "monospace:charset=2600,1f600"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(PathBuf::from);
+    if let Some(font) = matched.as_deref().and_then(read_font) {
+        return Some(font);
+    }
+    for path in [
+        "/usr/share/fonts/wps-fonts/seguiemj.ttf",
+        "/usr/share/fonts/wps-fonts/seguisym.ttf",
+        "/usr/share/fonts/TTF/SymbolsNerdFont-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
+        "/usr/share/fonts/noto/NotoEmoji-Regular.ttf",
+        "/usr/share/fonts/truetype/ancient-scripts/Symbola.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    ] {
+        if let Some(font) = read_font(Path::new(path)) {
+            return Some(font);
+        }
+    }
+    None
+}
+
+fn load_emoji_font_data() -> Option<Vec<u8>> {
+    let matched = std::process::Command::new("fc-match")
+        .args(["-f", "%{file}", "emoji"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(PathBuf::from);
+    if let Some(path) = matched.filter(|p| p.exists()) {
+        if let Ok(bytes) = fs::read(&path) {
+            return Some(bytes);
+        }
+    }
+    for path in [
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/noto-color-emoji/NotoColorEmoji.ttf",
+        "/usr/share/fonts/TTF/NotoColorEmoji.ttf",
+    ] {
+        if let Ok(bytes) = fs::read(path) {
+            return Some(bytes);
+        }
+    }
+    None
+}
+
+fn is_emoji(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x1F600..=0x1F64F
+        | 0x1F300..=0x1F5FF
+        | 0x1F680..=0x1F6FF
+        | 0x1F700..=0x1F77F
+        | 0x1F780..=0x1F7FF
+        | 0x1F800..=0x1F8FF
+        | 0x1F900..=0x1F9FF
+        | 0x1FA00..=0x1FA6F
+        | 0x1FA70..=0x1FAFF
+        | 0x2600..=0x26FF
+        | 0x2700..=0x27BF
+        | 0x2300..=0x23FF
+        | 0x2B50..=0x2B55
+        | 0x1F1E6..=0x1F1FF
+    )
 }
 
 fn read_font(path: &Path) -> Option<FontArc> {
@@ -1811,5 +2091,44 @@ mod tests {
         assert!(!renderer.cursor_visible());
         renderer.set_cursor_visible(true);
         assert!(renderer.cursor_visible());
+    }
+
+    #[test]
+    fn tab_column_alignment_and_emoji_rendering() {
+        let config = Config::default();
+        let mut renderer = Renderer::new(&config).unwrap();
+
+        // 1. Tab expands to tab stop aligning columns
+        let w1 = renderer.text_width("20\t", 16.0);
+        let w2 = renderer.text_width("9\t", 16.0);
+        assert!(w1 > 0.0);
+        assert_eq!(
+            w1, w2,
+            "Both 20\\t and 9\\t must align to the exact same tab stop column"
+        );
+
+        // 2. Both columns followed by emoji or text align identically
+        let w_emoji1 = renderer.text_width("20\t😀", 16.0);
+        let w_emoji2 = renderer.text_width("9\t😀", 16.0);
+        assert_eq!(w_emoji1, w_emoji2);
+        assert!(w_emoji1 > w1);
+
+        // 3. Render into canvas without panic
+        let model = UiModel::dmenu(
+            config,
+            vec!["20\t😀".into(), "9\tHubungkan".into()],
+            DmenuModelOptions {
+                prompt: String::new(),
+                initial_query: String::new(),
+                print_query: false,
+                fuzzy: true,
+                case_sensitive: false,
+                password: false,
+            },
+        );
+        let mut canvas = vec![0u8; 640 * 400 * 4];
+        renderer.draw(&mut canvas, 640, 400, &model);
+        // Canvas has non-zero pixel data
+        assert!(canvas.iter().any(|&b| b != 0));
     }
 }
