@@ -692,7 +692,6 @@ impl Renderer {
             model.selected,
             model.results.len(),
             visible,
-            model.selection_moved_down,
         );
         let first = self.first_visible;
         for (row, (index, result)) in model
@@ -875,21 +874,11 @@ fn result_window_start(
     selected: usize,
     total: usize,
     visible: usize,
-    moved_down: bool,
 ) -> usize {
     let visible = visible.max(1);
     let max_first = total.saturating_sub(visible);
     let mut first = current_first.min(max_first);
-    if moved_down {
-        if selected < first {
-            first = 0;
-        } else {
-            let selected_row = visible.saturating_sub(2);
-            if selected > first.saturating_add(selected_row) {
-                first = selected.saturating_sub(selected_row).min(max_first);
-            }
-        }
-    } else if selected < first {
+    if selected < first {
         first = selected;
     } else if selected >= first.saturating_add(visible) {
         first = selected
@@ -1517,25 +1506,29 @@ mod tests {
     }
 
     #[test]
-    fn result_window_keeps_one_row_below_selection_until_near_end() {
+    fn result_window_scrolls_only_at_edges_without_scrolloff() {
         let mut first = 0;
         for selected in 1..=7 {
-            first = result_window_start(first, selected, 30, 8, true);
+            first = result_window_start(first, selected, 30, 8);
         }
+        // At selected = 7 (the 8th item, row index 7), first is still 0 (no scrolloff).
+        assert_eq!(first, 0);
+        // At selected = 8, it scrolls down by 1 so item 8 is the bottom row.
+        first = result_window_start(first, 8, 30, 8);
         assert_eq!(first, 1);
-        // Reversing direction moves the highlight up within the current viewport.
-        first = result_window_start(first, 6, 30, 8, false);
+        // Reversing direction keeps the current viewport until reaching the top edge.
+        first = result_window_start(first, 6, 30, 8);
         assert_eq!(first, 1);
-        first = result_window_start(first, 5, 30, 8, false);
+        first = result_window_start(first, 1, 30, 8);
         assert_eq!(first, 1);
-        first = result_window_start(first, 0, 30, 8, false);
+        first = result_window_start(first, 0, 30, 8);
         assert_eq!(first, 0);
         // At the end of the dataset, clamp the viewport so the final rows stay filled.
-        assert_eq!(result_window_start(22, 29, 30, 8, true), 22);
-        assert_eq!(result_window_start(0, 0, 4, 8, true), 0);
-        assert_eq!(result_window_start(0, 4, 10, 1, true), 4);
-        assert_eq!(result_window_start(22, 0, 30, 8, true), 0);
-        assert_eq!(result_window_start(0, 29, 30, 8, false), 22);
+        assert_eq!(result_window_start(22, 29, 30, 8), 22);
+        assert_eq!(result_window_start(0, 0, 4, 8), 0);
+        assert_eq!(result_window_start(0, 4, 10, 1), 4);
+        assert_eq!(result_window_start(22, 0, 30, 8), 0);
+        assert_eq!(result_window_start(0, 29, 30, 8), 22);
     }
 
     #[test]
