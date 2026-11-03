@@ -1,4 +1,8 @@
-use calloop::{channel, EventLoop, LoopHandle};
+use calloop::{
+    channel,
+    timer::{TimeoutAction, Timer},
+    EventLoop, LoopHandle,
+};
 use calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -107,6 +111,8 @@ fn run_model(model: UiModel, config: Config) -> Result<Action, Box<dyn std::erro
         configured: false,
         keyboard: None,
         pointer: None,
+        cursor_visible: true,
+        last_cursor_activity: std::time::Instant::now(),
         scroll_accumulator: 0.0,
         modifiers: Modifiers::default(),
         bindings,
@@ -169,6 +175,22 @@ fn run_model(model: UiModel, config: Config) -> Result<Action, Box<dyn std::erro
                 }
             }
         })?;
+    let blink_timer = Timer::from_duration(std::time::Duration::from_millis(500));
+    event_loop
+        .handle()
+        .insert_source(blink_timer, |_deadline, _, state| {
+            if !state.model.exit && state.configured && !state.model.is_help_mode() {
+                let idle = state.last_cursor_activity.elapsed();
+                if idle >= std::time::Duration::from_millis(400) {
+                    state.cursor_visible = !state.cursor_visible;
+                    state.draw();
+                } else if !state.cursor_visible {
+                    state.cursor_visible = true;
+                    state.draw();
+                }
+            }
+            TimeoutAction::ToDuration(std::time::Duration::from_millis(500))
+        })?;
     state.maybe_start_binary_scan();
     while !state.model.exit {
         event_loop.dispatch(None, &mut state)?;
@@ -188,6 +210,8 @@ struct State {
     configured: bool,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
+    cursor_visible: bool,
+    last_cursor_activity: std::time::Instant,
     scroll_accumulator: f64,
     modifiers: Modifiers,
     bindings: RuntimeBindings,
@@ -208,7 +232,13 @@ enum WorkerMessage {
 }
 
 impl State {
+    fn reset_cursor_blink(&mut self) {
+        self.cursor_visible = true;
+        self.last_cursor_activity = std::time::Instant::now();
+    }
+
     fn handle_key(&mut self, event: KeyEvent) {
+        self.reset_cursor_blink();
         let key = event.keysym;
         let modifiers = self.modifiers;
         if self.bindings.help.matches(key, modifiers) && !self.model.is_help_mode() {
@@ -254,6 +284,10 @@ impl State {
             self.model.move_to_beginning();
         } else if self.bindings.end.matches(key, modifiers) {
             self.model.move_to_end();
+        } else if key == Keysym::Left && !modifiers.ctrl && !modifiers.alt && !modifiers.logo {
+            self.model.move_left();
+        } else if key == Keysym::Right && !modifiers.ctrl && !modifiers.alt && !modifiers.logo {
+            self.model.move_right();
         } else if !modifiers.ctrl && !modifiers.alt && !modifiers.logo {
             if let Some(text) = event
                 .utf8
@@ -270,6 +304,7 @@ impl State {
     }
 
     fn handle_click(&mut self, x: f64, y: f64) {
+        self.reset_cursor_blink();
         let Some(index) =
             self.renderer
                 .item_at(x, y, self.width, self.height, self.model.results.len())
@@ -287,6 +322,7 @@ impl State {
     }
 
     fn handle_axis(&mut self, vertical: AxisScroll) {
+        self.reset_cursor_blink();
         let steps = calculate_axis_scroll(&mut self.scroll_accumulator, vertical);
         if steps > 0 {
             self.model.scroll_down_by(steps as usize);
@@ -324,6 +360,7 @@ impl State {
         ) else {
             return;
         };
+        self.renderer.set_cursor_visible(self.cursor_visible);
         self.renderer
             .draw(canvas, self.width, self.height, &self.model);
         convert_rgba_to_wayland_argb8888(canvas);

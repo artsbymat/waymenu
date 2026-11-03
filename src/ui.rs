@@ -221,6 +221,42 @@ impl UiModel {
     pub fn move_to_end(&mut self) {
         self.cursor = self.input.len();
     }
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+    pub fn move_left(&mut self) {
+        if self.cursor > 0 {
+            let previous = self.input[..self.cursor]
+                .char_indices()
+                .next_back()
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+            self.cursor = previous;
+        }
+    }
+    pub fn move_right(&mut self) {
+        if self.cursor < self.input.len() {
+            let next = self.input[self.cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(index, _)| self.cursor + index)
+                .unwrap_or(self.input.len());
+            self.cursor = next;
+        }
+    }
+    pub fn cursor_prefix(&self) -> std::borrow::Cow<'_, str> {
+        if self.help_mode {
+            std::borrow::Cow::Borrowed("")
+        } else if self.password {
+            let count = self.input[..self.cursor.min(self.input.len())]
+                .chars()
+                .count();
+            std::borrow::Cow::Owned("•".repeat(count))
+        } else {
+            let end = self.cursor.min(self.input.len());
+            std::borrow::Cow::Borrowed(&self.input[..end])
+        }
+    }
 
     pub fn toggle_help(&mut self) {
         if self.dmenu.is_some() {
@@ -576,6 +612,7 @@ pub struct Renderer {
     font_size: f32,
     border_radius: f32,
     first_visible: usize,
+    cursor_visible: bool,
 }
 
 struct IconBitmap {
@@ -627,7 +664,37 @@ impl Renderer {
             font_size: config.appearance.font_size,
             border_radius: config.appearance.border_radius,
             first_visible: 0,
+            cursor_visible: true,
         })
+    }
+
+    pub fn set_cursor_visible(&mut self, visible: bool) {
+        self.cursor_visible = visible;
+    }
+
+    pub fn cursor_visible(&self) -> bool {
+        self.cursor_visible
+    }
+
+    pub fn text_width(&self, text: &str, size: f32) -> f32 {
+        let Some(font) = &self.font else { return 0.0 };
+        let scaled = font.as_scaled(PxScale::from(size));
+        let mut width = 0.0;
+        let mut previous = None;
+        for ch in text.chars().take(100) {
+            let id = scaled.glyph_id(ch);
+            if let Some(last) = previous {
+                width += scaled.kern(last, id);
+            }
+            width += scaled.h_advance(id);
+            previous = Some(id);
+        }
+        width
+    }
+
+    pub fn caret_x(&self, model: &UiModel) -> f32 {
+        let prefix = model.cursor_prefix();
+        32.0 + self.text_width(&prefix, self.font_size + 5.0)
     }
 
     pub fn first_visible(&self) -> usize {
@@ -678,14 +745,31 @@ impl Renderer {
             self.border_radius.min(27.0),
             self.theme.input,
         );
+        let (input_x, input_color) = if model.input.is_empty() && !model.is_help_mode() {
+            (36.0, self.theme.secondary)
+        } else {
+            (32.0, self.theme.primary)
+        };
         self.text(
             &mut pixmap,
             &model.displayed_input(),
-            32.0,
+            input_x,
             45.0,
             self.font_size + 5.0,
-            self.theme.primary,
+            input_color,
         );
+        if !model.is_help_mode() && self.cursor_visible {
+            let caret_x = self.caret_x(model).min(width as f32 - 32.0);
+            fill_round_rect(
+                &mut pixmap,
+                caret_x,
+                27.0,
+                2.0,
+                23.0,
+                1.0,
+                self.theme.primary,
+            );
+        }
         let visible = ((height.saturating_sub(110)) / 58).max(1) as usize;
         self.first_visible = result_window_start(
             self.first_visible,
@@ -1656,5 +1740,48 @@ mod tests {
         // Scroll up at beginning clamps, does not wrap
         model.scroll_up_by(5);
         assert_eq!(model.selected, 0);
+    }
+
+    #[test]
+    fn caret_position_and_blinking_visibility() {
+        let config = Config::default();
+        let mut renderer = Renderer::new(&config).unwrap();
+        let mut model = UiModel::new(config);
+
+        // Initially empty input
+        assert_eq!(model.cursor(), 0);
+        assert_eq!(model.cursor_prefix(), "");
+        assert_eq!(renderer.caret_x(&model), 32.0);
+
+        // Typing characters advances caret
+        model.insert("firefox");
+        assert_eq!(model.cursor(), 7);
+        assert_eq!(model.cursor_prefix(), "firefox");
+        let full_width = renderer.caret_x(&model);
+        assert!(full_width > 32.0);
+
+        // Moving left moves caret backwards
+        model.move_left();
+        assert_eq!(model.cursor(), 6);
+        assert_eq!(model.cursor_prefix(), "firefo");
+        let left_width = renderer.caret_x(&model);
+        assert!(left_width < full_width);
+
+        // Moving to beginning
+        model.move_to_beginning();
+        assert_eq!(model.cursor(), 0);
+        assert_eq!(renderer.caret_x(&model), 32.0);
+
+        // Moving right moves caret forward
+        model.move_right();
+        assert_eq!(model.cursor(), 1);
+        assert!(renderer.caret_x(&model) > 32.0);
+
+        // Cursor visibility toggle
+        assert!(renderer.cursor_visible());
+        renderer.set_cursor_visible(false);
+        assert!(!renderer.cursor_visible());
+        renderer.set_cursor_visible(true);
+        assert!(renderer.cursor_visible());
     }
 }
