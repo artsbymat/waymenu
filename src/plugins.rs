@@ -540,6 +540,26 @@ mod tests {
     }
 
     #[test]
+    fn loads_and_executes_built_emoji_plugin() {
+        let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/emoji/target/release/libemoji.so");
+        if !so_path.exists() {
+            return;
+        }
+        let plugin = DynamicPlugin::load(&so_path).unwrap();
+        assert_eq!(plugin.id(), "emoji");
+        assert_eq!(plugin.prefix(), "e ");
+
+        let results = plugin.search("fire");
+        assert!(!results.is_empty());
+        assert_eq!(results[0].id, "🔥");
+        assert_eq!(results[0].title, "🔥  Fire");
+
+        let action = plugin.action(&results[0]);
+        assert_eq!(action, Action::CopyText("🔥".into()));
+    }
+
+    #[test]
     fn loads_and_executes_built_youtube_plugin() {
         let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("plugins/youtube/target/release/libyoutube.so");
