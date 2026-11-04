@@ -686,6 +686,52 @@ mod tests {
     }
 
     #[test]
+    fn loads_and_executes_built_pacman_plugin() {
+        let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/pacman/target/release/libpacman.so");
+        if !so_path.exists() {
+            return;
+        }
+        let plugin = DynamicPlugin::load(&so_path).unwrap();
+        assert_eq!(plugin.id(), "pacman");
+        assert_eq!(plugin.prefix(), "pac ");
+
+        let results = plugin.search("");
+        assert!(!results.is_empty());
+        assert_eq!(results[0].id, "sysupgrade");
+
+        let search_results = plugin.search("firefox");
+        assert!(!search_results.is_empty());
+
+        let help_item = SearchResult {
+            id: "help".into(),
+            title: "".into(),
+            description: "".into(),
+            score: 0,
+            icon: None,
+            image: None,
+            metadata: None,
+        };
+        assert_eq!(plugin.action(&help_item), Action::None);
+
+        let install_item = SearchResult {
+            id: "install:firefox".into(),
+            title: "firefox".into(),
+            description: "".into(),
+            score: 0,
+            icon: None,
+            image: None,
+            metadata: None,
+        };
+        let action = plugin.action(&install_item);
+        match action {
+            Action::RunShell(cmd) => assert!(cmd.contains("firefox")),
+            Action::CopyText(cmd) => assert!(cmd.contains("firefox")),
+            _ => panic!("Expected RunShell or CopyText"),
+        }
+    }
+
+    #[test]
     fn dynamic_plugins_are_optional_and_only_shared_objects_are_discovered() {
         let directory =
             std::env::temp_dir().join(format!("waymenu-plugins-{}", std::process::id()));

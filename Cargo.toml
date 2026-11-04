@@ -14,6 +14,7 @@ exclude = [
     "plugins/emoji",
     "plugins/clipboard",
     "plugins/kill",
+    "plugins/pacman",
 ]
 resolver = "2"
 

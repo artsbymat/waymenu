@@ -78,6 +78,26 @@ You can also bind it in Hyprland directly:
 bind = SUPER, Escape, exec, waymenu --input 'k '
 ```
 
+The Pacman plugin allows searching, installing, and managing Arch Linux packages using the `pac ` prefix:
+
+```sh
+cargo build --manifest-path plugins/pacman/Cargo.toml --release
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins"
+cp plugins/pacman/target/release/libpacman.so \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins/"
+```
+
+It features:
+- **Fast package search**: Queries sync repositories (`core`, `extra`, `multilib`) and local/AUR packages (`/var/lib/pacman/local`).
+- **Subcommands**: Supports `pac <query>` (install/reinstall/remove), `pac -R <query>` (remove), `pac -Q <query>` (info), `pac -Syu` (upgrade), and `pac -Sc` (clean cache).
+- **Interactive terminal execution**: Automatically detects terminal emulators (`foot`, `kitty`, `alacritty`, `ghostty`, etc.) and keeps the terminal open so user confirmations, sudo passwords, and installation logs remain visible.
+- **AUR helper compatibility**: Supports `paru`, `yay`, or custom commands via `WAYMENU_PACMAN_WRAPPER`.
+
+You can also bind it in Hyprland directly:
+```ini
+bind = SUPER, P, exec, waymenu --input 'pac '
+```
+
 Then enter expressions such as `=2+2` or `=1 mile -> km`; Enter copies the result with
 `wl-copy`. For development, `WAYMENU_PLUGIN_DIR=/path/to/plugins` overrides the plugin
 directory. The plugin SDK and ABI v2 contract are in `plugin-api/`.
