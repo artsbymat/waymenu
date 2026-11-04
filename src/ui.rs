@@ -26,7 +26,9 @@ pub struct UiModel {
     cursor: usize,
     config: Config,
     applications: Vec<DesktopApplication>,
+    application_results: Vec<SearchResult>,
     binaries: Option<Vec<Binary>>,
+    binary_results: Option<Vec<SearchResult>>,
     history: History,
     plugins: Option<PluginManager>,
     dmenu: Option<DmenuState>,
@@ -49,10 +51,30 @@ pub struct DmenuModelOptions {
 }
 
 impl UiModel {
+    fn build_app_results(
+        applications: &[DesktopApplication],
+        history: &History,
+        config: &Config,
+    ) -> Vec<SearchResult> {
+        applications
+            .iter()
+            .map(|app| {
+                app.as_result(
+                    if config.general.remember_history && config.history.enabled {
+                        history.score(&app.id)
+                    } else {
+                        0
+                    },
+                )
+            })
+            .collect()
+    }
+
     pub fn new(config: Config) -> Self {
         let history = History::load_with_limit(config.history.max_entries);
         let plugins = PluginManager::from_config(&config);
         let applications = crate::applications::discover();
+        let application_results = Self::build_app_results(&applications, &history, &config);
         let mut model = Self {
             input: String::new(),
             results: Vec::new(),
@@ -65,7 +87,9 @@ impl UiModel {
             cursor: 0,
             config,
             applications,
+            application_results,
             binaries: None,
+            binary_results: None,
             history,
             plugins: Some(plugins),
             dmenu: None,
@@ -110,7 +134,9 @@ impl UiModel {
             cursor,
             config,
             applications: Vec::new(),
+            application_results: Vec::new(),
             binaries: None,
+            binary_results: None,
             history,
             plugins: None,
             dmenu: Some(DmenuState {
@@ -367,6 +393,8 @@ impl UiModel {
     pub fn record_launch(&mut self, id: &str) {
         if self.config.history.enabled {
             let _ = self.history.record(id);
+            self.application_results =
+                Self::build_app_results(&self.applications, &self.history, &self.config);
         }
     }
 
@@ -450,6 +478,7 @@ impl UiModel {
     }
 
     pub fn set_binaries(&mut self, binaries: Vec<Binary>) {
+        self.binary_results = Some(binaries.iter().map(Binary::as_result).collect());
         self.binaries = Some(binaries);
         self.refresh();
     }
@@ -461,11 +490,12 @@ impl UiModel {
             self.results = self.help_results();
             return;
         }
+        let max_search_limit = (self.config.general.max_results * 15).max(200);
         if let Some(dmenu) = &self.dmenu {
             if self.input.is_empty() {
-                self.results = dmenu.items.clone();
+                self.results = dmenu.items.iter().take(max_search_limit).cloned().collect();
             } else if dmenu.fuzzy && !dmenu.case_sensitive {
-                self.results = search::filter(&dmenu.items, &self.input, dmenu.items.len());
+                self.results = search::filter(&dmenu.items, &self.input, max_search_limit);
             } else {
                 let query = if dmenu.case_sensitive {
                     self.input.clone()
@@ -487,6 +517,7 @@ impl UiModel {
                             title.contains(&query)
                         }
                     })
+                    .take(max_search_limit)
                     .cloned()
                     .collect();
             }
@@ -504,12 +535,9 @@ impl UiModel {
             }
             return;
         }
-        if let Some(plugins) = &self.plugins {
-            plugins.unload_unused(None);
-        }
         if let Some(query) = self.input.strip_prefix(&self.config.binary.prefix) {
             let query = query.trim_start();
-            let Some(binaries) = &self.binaries else {
+            let Some(binaries) = &self.binary_results else {
                 self.results = vec![SearchResult {
                     id: String::new(),
                     title: "Scanning PATH…".into(),
@@ -521,24 +549,14 @@ impl UiModel {
                 }];
                 return;
             };
-            let candidates: Vec<_> = binaries.iter().map(Binary::as_result).collect();
-            self.results = search::filter(&candidates, query, usize::MAX);
+            self.results = search::filter(binaries, query, max_search_limit);
             return;
         }
-        let candidates: Vec<_> = self
-            .applications
-            .iter()
-            .map(|app| {
-                app.as_result(
-                    if self.config.general.remember_history && self.config.history.enabled {
-                        self.history.score(&app.id)
-                    } else {
-                        0
-                    },
-                )
-            })
-            .collect();
-        self.results = search::filter(&candidates, &self.input, usize::MAX);
+        if self.application_results.len() != self.applications.len() {
+            self.application_results =
+                Self::build_app_results(&self.applications, &self.history, &self.config);
+        }
+        self.results = search::filter(&self.application_results, &self.input, max_search_limit);
     }
 
     fn help_results(&self) -> Vec<SearchResult> {
@@ -1028,7 +1046,7 @@ impl Renderer {
         let cache_key = format!("{size}:{name}");
         if !self.icons.contains_key(&cache_key) {
             let bitmap = resolve_icon(name).and_then(|path| decode_image(&path, size));
-            if self.icons.len() >= 32 {
+            if self.icons.len() >= 256 {
                 if let Some(oldest) = self.icon_order.pop_front() {
                     self.icons.remove(&oldest);
                 }
@@ -1451,6 +1469,24 @@ fn find_any_system_font() -> Option<FontArc> {
 }
 
 fn resolve_icon(name: &str) -> Option<PathBuf> {
+    static RESOLVED_CACHE: std::sync::OnceLock<
+        std::sync::RwLock<HashMap<String, Option<PathBuf>>>,
+    > = std::sync::OnceLock::new();
+    let cache = RESOLVED_CACHE.get_or_init(|| std::sync::RwLock::new(HashMap::new()));
+    if let Ok(guard) = cache.read() {
+        if let Some(cached) = guard.get(name) {
+            return cached.clone();
+        }
+    }
+
+    let resolved = resolve_icon_uncached(name);
+    if let Ok(mut guard) = cache.write() {
+        guard.insert(name.to_owned(), resolved.clone());
+    }
+    resolved
+}
+
+fn resolve_icon_uncached(name: &str) -> Option<PathBuf> {
     let direct = PathBuf::from(name);
     if direct.is_absolute() && direct.is_file() {
         return Some(direct);

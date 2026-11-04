@@ -1,4 +1,10 @@
-use std::{collections::HashSet, fs, process::Command};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
+};
 use waymenu_plugin_api::PluginResult;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,15 +25,79 @@ pub enum QueryMode {
     CleanCache,
 }
 
+fn cache_path() -> PathBuf {
+    if let Ok(dir) = std::env::var("XDG_CACHE_HOME") {
+        PathBuf::from(dir).join("waymenu").join("pacman_packages.cache")
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".cache").join("waymenu").join("pacman_packages.cache")
+    } else {
+        std::env::temp_dir().join("waymenu_pacman_packages.cache")
+    }
+}
+
+fn is_cache_valid(path: &Path) -> bool {
+    let Ok(cache_meta) = fs::metadata(path) else {
+        return false;
+    };
+    let Ok(cache_mtime) = cache_meta.modified() else {
+        return false;
+    };
+
+    // If cache was generated in the last 10 minutes, use it immediately
+    if let Ok(elapsed) = cache_mtime.elapsed() {
+        if elapsed < Duration::from_secs(600) {
+            return true;
+        }
+    }
+
+    // Otherwise check pacman db mtime
+    if let Ok(sync_meta) = fs::metadata("/var/lib/pacman/sync") {
+        if let Ok(sync_mtime) = sync_meta.modified() {
+            if sync_mtime > cache_mtime {
+                return false;
+            }
+        }
+    }
+    if let Ok(local_meta) = fs::metadata("/var/lib/pacman/local") {
+        if let Ok(local_mtime) = local_meta.modified() {
+            if local_mtime > cache_mtime {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
 /// Discover all available packages from sync repositories and local database.
 pub fn discover_packages() -> Vec<PackageEntry> {
+    let cache = cache_path();
+    if let Ok(content) = fs::read_to_string(&cache) {
+        let pkgs = parse_pacman_sl_output(&content);
+        if !pkgs.is_empty() {
+            if !is_cache_valid(&cache) {
+                let cache_clone = cache.clone();
+                std::thread::spawn(move || {
+                    let _ = refresh_disk_cache(&cache_clone);
+                });
+            }
+            return pkgs;
+        }
+    }
+
+    refresh_disk_cache(&cache)
+}
+
+pub fn refresh_disk_cache(cache: &Path) -> Vec<PackageEntry> {
     let mut packages = Vec::new();
     let mut known = HashSet::new();
+    let mut cache_content = String::new();
 
     // Query sync databases via pacman -Sl
     if let Ok(output) = Command::new("pacman").arg("-Sl").output() {
         if output.status.success() {
             if let Ok(text) = std::str::from_utf8(&output.stdout) {
+                cache_content.push_str(text);
                 packages = parse_pacman_sl_output(text);
                 for p in &packages {
                     known.insert(p.name.clone());
@@ -38,7 +108,17 @@ pub fn discover_packages() -> Vec<PackageEntry> {
 
     // Augment with foreign/AUR packages in /var/lib/pacman/local
     let local_pkgs = discover_local_packages(&known);
+    for lp in &local_pkgs {
+        cache_content.push_str(&format!("{} {} {} [installed]\n", lp.repo, lp.name, lp.version));
+    }
     packages.extend(local_pkgs);
+
+    if !cache_content.is_empty() {
+        if let Some(parent) = cache.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(cache, cache_content);
+    }
 
     packages
 }
@@ -86,32 +166,17 @@ pub fn discover_local_packages(known: &HashSet<String>) -> Vec<PackageEntry> {
             continue;
         }
 
-        let desc_path = entry.path().join("desc");
-        let Ok(desc_content) = fs::read_to_string(desc_path) else {
-            continue;
-        };
+        let mut parts = name_str.rsplitn(3, '-');
+        let _pkgrel = parts.next();
+        let version = parts.next();
+        let name = parts.next();
 
-        let mut lines = desc_content.lines();
-        let mut pkg_name = None;
-        let mut pkg_version = None;
-
-        while let Some(line) = lines.next() {
-            if line == "%NAME%" {
-                pkg_name = lines.next().map(str::to_string);
-            } else if line == "%VERSION%" {
-                pkg_version = lines.next().map(str::to_string);
-            }
-            if pkg_name.is_some() && pkg_version.is_some() {
-                break;
-            }
-        }
-
-        if let (Some(name), Some(version)) = (pkg_name, pkg_version) {
-            if !known.contains(&name) {
+        if let (Some(name), Some(version)) = (name, version) {
+            if !known.contains(name) {
                 local_pkgs.push(PackageEntry {
                     repo: "local".to_string(),
-                    name,
-                    version,
+                    name: name.to_string(),
+                    version: version.to_string(),
                     installed: true,
                 });
             }
@@ -167,37 +232,62 @@ pub fn parse_query(raw_query: &str) -> (QueryMode, &str) {
 }
 
 /// Scores a package against a search query.
+#[allow(dead_code)]
 pub fn score_package(pkg: &PackageEntry, query: &str) -> Option<i64> {
     if query.is_empty() {
         return Some(if pkg.installed { 500 } else { 0 });
     }
-    let name_lower = pkg.name.to_lowercase();
     let query_lower = query.to_lowercase();
+    score_package_lowercased(pkg, query, &query_lower)
+}
+
+pub fn score_package_lowercased(
+    pkg: &PackageEntry,
+    query_raw: &str,
+    query_lower: &str,
+) -> Option<i64> {
+    if query_lower.is_empty() {
+        return Some(if pkg.installed { 500 } else { 0 });
+    }
+
+    let name = &pkg.name;
 
     // Exact match
-    if name_lower == query_lower {
+    if name.eq_ignore_ascii_case(query_raw) {
         return Some(10_000 + if pkg.installed { 100 } else { 0 });
     }
 
     // Prefix match
-    if name_lower.starts_with(&query_lower) {
-        let penalty = (name_lower.len() - query_lower.len()) as i64 * 10;
+    let starts_prefix = if name.is_ascii() && query_lower.is_ascii() {
+        name.len() >= query_lower.len()
+            && name[..query_lower.len()].eq_ignore_ascii_case(query_lower)
+    } else {
+        name.to_lowercase().starts_with(query_lower)
+    };
+
+    if starts_prefix {
+        let penalty = (name.len() - query_lower.len()) as i64 * 10;
         return Some(7_000 - penalty.min(2_000) + if pkg.installed { 100 } else { 0 });
     }
 
     // Substring match
-    if let Some(pos) = name_lower.find(&query_lower) {
+    if let Some(pos) = name.find(query_lower) {
         let pos_penalty = pos as i64 * 50;
-        let len_penalty = (name_lower.len() - query_lower.len()) as i64 * 10;
+        let len_penalty = (name.len() - query_lower.len()) as i64 * 10;
         return Some(4_000 - pos_penalty.min(1_000) - len_penalty.min(1_000));
     }
 
-    // Ordered subsequence match
-    let mut chars = name_lower.char_indices();
+    // Skip expensive ordered subsequence search for 1-char queries to ensure instant typing
+    if query_lower.len() <= 1 {
+        return None;
+    }
+
+    // Ordered subsequence match without allocating per candidate
+    let mut chars = name.char_indices();
     let mut prev = None;
     let mut score = 2_000i64;
     for needle in query_lower.chars() {
-        let (idx, _) = chars.find(|(_, c)| *c == needle)?;
+        let (idx, _) = chars.find(|(_, c)| c.to_ascii_lowercase() == needle)?;
         if let Some(last) = prev {
             let gap = idx.saturating_sub(last + 1) as i64;
             score -= gap.min(20) * 10;
@@ -206,7 +296,7 @@ pub fn score_package(pkg: &PackageEntry, query: &str) -> Option<i64> {
         }
         prev = Some(idx);
     }
-    score -= (name_lower.len() as i64).min(100);
+    score -= (name.len() as i64).min(100);
     Some(score.max(10))
 }
 
@@ -220,7 +310,7 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
             title: "System Upgrade (sudo pacman -Syu)".into(),
             description: "Synchronize repositories and upgrade all system packages".into(),
             score: 10_000,
-            icon: Some("system-software-update".into()),
+            icon: Some("🔄".into()),
             image: None,
             metadata: Some("pacman".into()),
         }],
@@ -229,7 +319,7 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
             title: "Clean Cache (sudo pacman -Sc)".into(),
             description: "Remove cached package tarballs to reclaim disk space".into(),
             score: 10_000,
-            icon: Some("edit-clear".into()),
+            icon: Some("🧹".into()),
             image: None,
             metadata: Some("pacman".into()),
         }],
@@ -239,7 +329,7 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
                 title: "System Upgrade (sudo pacman -Syu)".into(),
                 description: "Synchronize repositories and upgrade all packages".into(),
                 score: 10_000,
-                icon: Some("system-software-update".into()),
+                icon: Some("🔄".into()),
                 image: None,
                 metadata: Some("pacman".into()),
             },
@@ -248,7 +338,7 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
                 title: "Clean Cache (sudo pacman -Sc)".into(),
                 description: "Clean package cache to free up disk space".into(),
                 score: 9_000,
-                icon: Some("edit-clear".into()),
+                icon: Some("🧹".into()),
                 image: None,
                 metadata: Some("pacman".into()),
             },
@@ -257,7 +347,7 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
                 title: "Remove Orphan Packages".into(),
                 description: "Find and remove unused dependencies (pacman -Qtdq)".into(),
                 score: 8_000,
-                icon: Some("user-trash".into()),
+                icon: Some("🗑️".into()),
                 image: None,
                 metadata: Some("pacman".into()),
             },
@@ -268,33 +358,44 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
                     "Type a package name (e.g. 'pac firefox', 'pac -R <pkg>', 'pac -Q <pkg>')"
                         .into(),
                 score: 7_000,
-                icon: Some("help-about".into()),
+                icon: Some("ℹ️".into()),
                 image: None,
                 metadata: Some("pacman".into()),
             },
         ],
         _ => {
-            let mut scored = Vec::new();
+            let query_lower = query.to_lowercase();
+            let max_results = 25;
+            let mut scored = Vec::with_capacity(256);
             for pkg in packages {
                 // If in Remove or Info mode, only consider installed packages
                 if (mode == QueryMode::Remove || mode == QueryMode::Info) && !pkg.installed {
                     continue;
                 }
 
-                if let Some(score) = score_package(pkg, query) {
+                if let Some(score) = score_package_lowercased(pkg, query, &query_lower) {
                     scored.push((pkg, score));
                 }
             }
 
-            // Sort by score descending, then package name ascending
+            if scored.len() > max_results {
+                scored.select_nth_unstable_by(max_results, |(pkg_a, score_a), (pkg_b, score_b)| {
+                    score_b
+                        .cmp(score_a)
+                        .then_with(|| pkg_a.name.cmp(&pkg_b.name))
+                });
+                scored.truncate(max_results);
+            }
+
+            // Sort only the top results
             scored.sort_unstable_by(|(pkg_a, score_a), (pkg_b, score_b)| {
                 score_b
                     .cmp(score_a)
                     .then_with(|| pkg_a.name.cmp(&pkg_b.name))
             });
 
-            let mut results = Vec::new();
-            for (pkg, score) in scored.into_iter().take(50) {
+            let mut results = Vec::with_capacity(scored.len());
+            for (pkg, score) in scored {
                 match mode {
                     QueryMode::Remove => {
                         results.push(PluginResult {
@@ -305,7 +406,7 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
                                 pkg.repo, pkg.version, pkg.name
                             ),
                             score,
-                            icon: Some("edit-delete".into()),
+                            icon: Some("🗑️".into()),
                             image: None,
                             metadata: Some("pacman".into()),
                         });
@@ -316,7 +417,7 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
                             title: format!("{} (v{}) [installed]", pkg.name, pkg.version),
                             description: format!("{} · pacman -Qi {}", pkg.repo, pkg.name),
                             score,
-                            icon: Some(pkg.name.clone()),
+                            icon: Some("ℹ️".into()),
                             image: None,
                             metadata: Some("pacman".into()),
                         });
@@ -331,7 +432,7 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
                                     pkg.repo, pkg.version
                                 ),
                                 score,
-                                icon: Some(pkg.name.clone()),
+                                icon: Some("📦".into()),
                                 image: None,
                                 metadata: Some("pacman".into()),
                             });
@@ -343,7 +444,7 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
                                     title: format!("Uninstall {}", pkg.name),
                                     description: format!("sudo pacman -Rns {}", pkg.name),
                                     score: score - 1,
-                                    icon: Some("edit-delete".into()),
+                                    icon: Some("🗑️".into()),
                                     image: None,
                                     metadata: Some("pacman".into()),
                                 });
@@ -357,7 +458,7 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
                                     pkg.repo, pkg.version, pkg.name
                                 ),
                                 score,
-                                icon: Some(pkg.name.clone()),
+                                icon: Some("📦".into()),
                                 image: None,
                                 metadata: Some("pacman".into()),
                             });
@@ -375,7 +476,7 @@ pub fn filter_and_rank_packages(packages: &[PackageEntry], raw_query: &str) -> V
                         "Attempt to install package '{query}' (sudo pacman -S {query})"
                     ),
                     score: 0,
-                    icon: Some("system-software-install".into()),
+                    icon: Some("📦".into()),
                     image: None,
                     metadata: Some("pacman".into()),
                 });

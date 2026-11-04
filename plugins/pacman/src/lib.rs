@@ -1,6 +1,7 @@
 use std::{
     ffi::{c_char, c_void, CStr},
     panic::{catch_unwind, AssertUnwindSafe},
+    sync::{Arc, OnceLock, RwLock},
     time::{Duration, Instant},
 };
 use waymenu_plugin_api::{
@@ -12,16 +13,43 @@ mod terminal;
 
 use package::PackageEntry;
 
+static GLOBAL_PACKAGES: OnceLock<RwLock<(Arc<Vec<PackageEntry>>, Instant)>> = OnceLock::new();
+
+fn get_or_load_packages() -> (Arc<Vec<PackageEntry>>, Instant) {
+    let cell = GLOBAL_PACKAGES.get_or_init(|| {
+        let pkgs = Arc::new(package::discover_packages());
+        RwLock::new((pkgs, Instant::now()))
+    });
+
+    if let Ok(guard) = cell.read() {
+        if !guard.0.is_empty() && guard.1.elapsed() < Duration::from_secs(600) {
+            return (Arc::clone(&guard.0), guard.1);
+        }
+    }
+
+    if let Ok(mut guard) = cell.write() {
+        if guard.0.is_empty() || guard.1.elapsed() >= Duration::from_secs(600) {
+            let pkgs = Arc::new(package::discover_packages());
+            guard.0 = pkgs;
+            guard.1 = Instant::now();
+        }
+        return (Arc::clone(&guard.0), guard.1);
+    }
+
+    (Arc::new(Vec::new()), Instant::now())
+}
+
 struct State {
-    packages: Vec<PackageEntry>,
+    packages: Arc<Vec<PackageEntry>>,
     last_refresh: Instant,
 }
 
 impl State {
     fn refresh_if_needed(&mut self) {
-        if self.packages.is_empty() || self.last_refresh.elapsed() > Duration::from_secs(60) {
-            self.packages = package::discover_packages();
-            self.last_refresh = Instant::now();
+        if self.packages.is_empty() || self.last_refresh.elapsed() > Duration::from_secs(600) {
+            let (pkgs, instant) = get_or_load_packages();
+            self.packages = pkgs;
+            self.last_refresh = instant;
         }
     }
 
@@ -49,11 +77,10 @@ pub extern "C" fn waymenu_plugin_v2() -> PluginApiV2 {
 
 unsafe extern "C" fn create() -> *mut c_void {
     catch_unwind(|| {
+        let (packages, last_refresh) = get_or_load_packages();
         Box::into_raw(Box::new(State {
-            packages: Vec::new(),
-            last_refresh: Instant::now()
-                .checked_sub(Duration::from_secs(120))
-                .unwrap_or_else(Instant::now),
+            packages,
+            last_refresh,
         }))
         .cast()
     })

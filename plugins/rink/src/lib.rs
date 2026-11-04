@@ -128,7 +128,9 @@ mod tests {
     #[test]
     fn exports_expected_prefix() {
         let api = super::waymenu_plugin_v2();
-        let prefix = unsafe { std::ffi::CStr::from_ptr(api.prefix) }.to_str().unwrap();
+        let prefix = unsafe { std::ffi::CStr::from_ptr(api.prefix) }
+            .to_str()
+            .unwrap();
         assert_eq!(prefix, "= ");
     }
 }

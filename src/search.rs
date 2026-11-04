@@ -5,20 +5,45 @@ pub fn fuzzy_score(candidate: &str, query: &str) -> Option<i64> {
     if query.is_empty() {
         return Some(0);
     }
-    let candidate_lower = candidate.to_lowercase();
     let query_lower = query.to_lowercase();
-    if candidate_lower == query_lower {
+    fuzzy_score_lowercased(candidate, query, &query_lower)
+}
+
+/// Internal helper that avoids re-allocating lowercased query for each candidate.
+pub fn fuzzy_score_lowercased(candidate: &str, query_raw: &str, query_lower: &str) -> Option<i64> {
+    if query_lower.is_empty() {
+        return Some(0);
+    }
+    if candidate.eq_ignore_ascii_case(query_raw) {
         return Some(10_000);
     }
-    let mut score = if candidate_lower.starts_with(&query_lower) {
-        5_000
+
+    let starts_with_prefix = if candidate.is_ascii() && query_lower.is_ascii() {
+        candidate.len() >= query_lower.len()
+            && candidate[..query_lower.len()].eq_ignore_ascii_case(query_lower)
     } else {
-        0
+        let mut cand_chars = candidate.chars().flat_map(char::to_lowercase);
+        let query_chars = query_lower.chars();
+        let mut matches = true;
+        for q in query_chars {
+            if cand_chars.next() != Some(q) {
+                matches = false;
+                break;
+            }
+        }
+        matches
     };
-    let mut chars = candidate_lower.char_indices();
+
+    let mut score = if starts_with_prefix { 5_000 } else { 0 };
+    let mut chars = candidate.char_indices();
     let mut previous = None;
+    let mut cand_char_count = 0usize;
+
     for needle in query_lower.chars() {
-        let (index, _) = chars.find(|(_, value)| *value == needle)?;
+        let (index, _) = chars.find(|(_, value)| {
+            cand_char_count += 1;
+            value.to_ascii_lowercase() == needle || value.to_lowercase().any(|c| c == needle)
+        })?;
         score += 100;
         if let Some(last) = previous {
             let gap = index.saturating_sub(last + 1) as i64;
@@ -31,7 +56,12 @@ pub fn fuzzy_score(candidate: &str, query: &str) -> Option<i64> {
         }
         previous = Some(index);
     }
-    Some(score - candidate_lower.len().min(100) as i64)
+
+    for _ in chars {
+        cand_char_count += 1;
+    }
+
+    Some(score - cand_char_count.min(100) as i64)
 }
 
 pub fn filter<'a>(
@@ -39,26 +69,49 @@ pub fn filter<'a>(
     query: &str,
     limit: usize,
 ) -> Vec<SearchResult> {
-    let mut matches: Vec<_> = items
-        .into_iter()
-        .filter_map(|item| {
-            let title_score = fuzzy_score(&item.title, query);
-            let description_score =
-                fuzzy_score(&item.description, query).map(|score| score - 1_000);
-            title_score
-                .into_iter()
-                .chain(description_score)
-                .max()
-                .map(|match_score| {
-                    let mut result = item.clone();
-                    result.score += match_score;
-                    result
-                })
-        })
-        .collect();
-    matches.sort_unstable_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
-    matches.truncate(limit);
+    let query = query.trim();
+    if query.is_empty() {
+        return items.into_iter().take(limit).cloned().collect();
+    }
+    let query_lower = query.to_lowercase();
+    let mut matches: Vec<(&'a SearchResult, i64)> = Vec::new();
+
+    for item in items {
+        let title_score = fuzzy_score_lowercased(&item.title, query, &query_lower);
+        let description_score = if item.description.is_empty() {
+            None
+        } else {
+            fuzzy_score_lowercased(&item.description, query, &query_lower)
+                .map(|score| score - 1_000)
+        };
+
+        let match_score = match (title_score, description_score) {
+            (Some(s1), Some(s2)) => Some(s1.max(s2)),
+            (Some(s1), None) => Some(s1),
+            (None, Some(s2)) => Some(s2),
+            (None, None) => None,
+        };
+
+        if let Some(match_score) = match_score {
+            matches.push((item, item.score + match_score));
+        }
+    }
+
+    matches.sort_unstable_by(|(item_a, score_a), (item_b, score_b)| {
+        score_b
+            .cmp(score_a)
+            .then_with(|| item_a.title.cmp(&item_b.title))
+    });
+
     matches
+        .into_iter()
+        .take(limit)
+        .map(|(item, score)| {
+            let mut result = item.clone();
+            result.score = score;
+            result
+        })
+        .collect()
 }
 
 #[cfg(test)]

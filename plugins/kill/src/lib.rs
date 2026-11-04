@@ -17,10 +17,12 @@ struct State {
 
 impl State {
     fn refresh_if_needed(&mut self, is_empty_query: bool) {
-        if is_empty_query
-            || self.processes.is_empty()
-            || self.last_refresh.elapsed() > Duration::from_millis(1000)
-        {
+        let max_age = if is_empty_query {
+            Duration::from_millis(1000)
+        } else {
+            Duration::from_millis(2500)
+        };
+        if self.processes.is_empty() || self.last_refresh.elapsed() > max_age {
             self.processes = proc::list_processes();
             self.last_refresh = Instant::now();
         }

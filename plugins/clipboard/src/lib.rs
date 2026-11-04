@@ -3,6 +3,7 @@ use std::{
     io::Write,
     panic::{catch_unwind, AssertUnwindSafe},
     process::{Command, Stdio},
+    time::{Duration, Instant},
 };
 use waymenu_plugin_api::{
     free_json, into_json, PluginAction, PluginApiV2, PluginResult, ABI_VERSION,
@@ -13,7 +14,38 @@ mod color;
 mod image;
 mod url;
 
-struct State;
+struct State {
+    cached_entries: Vec<backend::ClipboardRawEntry>,
+    last_fetch: Instant,
+}
+
+impl State {
+    fn refresh_if_needed(&mut self) {
+        if self.cached_entries.is_empty() || self.last_fetch.elapsed() > Duration::from_millis(2500)
+        {
+            if let Ok(entries) = backend::list_entries() {
+                self.cached_entries = entries;
+                self.last_fetch = Instant::now();
+            }
+        }
+    }
+
+    fn search(&mut self, query: &str) -> Vec<PluginResult> {
+        self.refresh_if_needed();
+        if self.cached_entries.is_empty() {
+            return vec![PluginResult {
+                id: String::new(),
+                title: "Clipboard is empty".into(),
+                description: "No entries stored in clipvault history".into(),
+                score: 1,
+                icon: None,
+                image: None,
+                metadata: None,
+            }];
+        }
+        process_entries(&self.cached_entries, query)
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn waymenu_plugin_v2() -> PluginApiV2 {
@@ -32,7 +64,16 @@ pub extern "C" fn waymenu_plugin_v2() -> PluginApiV2 {
 }
 
 unsafe extern "C" fn create() -> *mut c_void {
-    catch_unwind(|| Box::into_raw(Box::new(State)).cast()).unwrap_or(std::ptr::null_mut())
+    catch_unwind(|| {
+        Box::into_raw(Box::new(State {
+            cached_entries: Vec::new(),
+            last_fetch: Instant::now()
+                .checked_sub(Duration::from_secs(10))
+                .unwrap_or_else(Instant::now),
+        }))
+        .cast()
+    })
+    .unwrap_or(std::ptr::null_mut())
 }
 
 unsafe extern "C" fn destroy(state: *mut c_void) {
@@ -46,10 +87,11 @@ unsafe extern "C" fn search(state: *mut c_void, query: *const c_char) -> *mut c_
         if state.is_null() || query.is_null() {
             return into_json(&Vec::<PluginResult>::new());
         }
+        let state = unsafe { &mut *state.cast::<State>() };
         let Ok(raw_query) = (unsafe { CStr::from_ptr(query) }).to_str() else {
             return into_json(&Vec::<PluginResult>::new());
         };
-        into_json(&search_clipboard(raw_query))
+        into_json(&state.search(raw_query))
     }))
     .unwrap_or(std::ptr::null_mut())
 }
@@ -121,42 +163,11 @@ fn execute_action(action_id: &str) -> PluginAction {
     }
 }
 
-fn search_clipboard(query: &str) -> Vec<PluginResult> {
-    let raw_entries = match backend::list_entries() {
-        Ok(entries) => entries,
-        Err(err) => {
-            return vec![PluginResult {
-                id: String::new(),
-                title: "Clipboard manager unavailable".into(),
-                description: err,
-                score: 1,
-                icon: None,
-                image: None,
-                metadata: None,
-            }];
-        }
-    };
-
-    if raw_entries.is_empty() {
-        return vec![PluginResult {
-            id: String::new(),
-            title: "Clipboard is empty".into(),
-            description: "No entries stored in clipvault history".into(),
-            score: 1,
-            icon: None,
-            image: None,
-            metadata: None,
-        }];
-    }
-
-    process_entries(raw_entries, query)
-}
-
-fn process_entries(raw_entries: Vec<backend::ClipboardRawEntry>, query: &str) -> Vec<PluginResult> {
+fn process_entries(raw_entries: &[backend::ClipboardRawEntry], query: &str) -> Vec<PluginResult> {
     let query = query.trim().to_lowercase();
     let mut results = Vec::new();
 
-    for (index, entry) in raw_entries.into_iter().enumerate() {
+    for (index, entry) in raw_entries.iter().enumerate() {
         // Base score decreases with recency
         let base_score = 10_000 - (index as i64 * 10).min(9_000);
 
@@ -224,7 +235,7 @@ fn process_entries(raw_entries: Vec<backend::ClipboardRawEntry>, query: &str) ->
 
             if match_score > 0 {
                 results.push(PluginResult {
-                    id: entry.id,
+                    id: entry.id.clone(),
                     title,
                     description,
                     score: match_score,
@@ -254,7 +265,7 @@ fn process_entries(raw_entries: Vec<backend::ClipboardRawEntry>, query: &str) ->
 
             if match_score > 0 {
                 results.push(PluginResult {
-                    id: entry.id,
+                    id: entry.id.clone(),
                     title,
                     description,
                     score: match_score,
@@ -303,7 +314,7 @@ fn process_entries(raw_entries: Vec<backend::ClipboardRawEntry>, query: &str) ->
 
         if match_score > 0 {
             results.push(PluginResult {
-                id: entry.id,
+                id: entry.id.clone(),
                 title,
                 description,
                 score: match_score,
@@ -362,7 +373,7 @@ mod tests {
             },
         ];
 
-        let results = process_entries(entries, "");
+        let results = process_entries(&entries, "");
         assert_eq!(results.len(), 5);
 
         // 1. Color HEX
