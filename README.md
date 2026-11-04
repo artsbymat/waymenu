@@ -58,6 +58,26 @@ You can bind it in Hyprland directly:
 bind = SUPER, V, exec, waymenu --input 'cb '
 ```
 
+The Kill Process plugin allows searching and terminating running processes using the `k ` prefix:
+
+```sh
+cargo build --manifest-path plugins/kill/Cargo.toml --release
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins"
+cp plugins/kill/target/release/libkill.so \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins/"
+```
+
+It features:
+- **Fast fuzzy process search** by command name, PID, user, or full command-line arguments.
+- **Signal specification**: Supports flags like `k -15 firefox`, `k -term code`, `k -HUP nginx`, defaulting to `SIGKILL` (`-9`).
+- **Native POSIX syscall execution**: Direct `kill` syscall for zero overhead.
+- **Process filtering**: Distinguishes user processes from kernel threads, prioritizing the current user's processes.
+
+You can also bind it in Hyprland directly:
+```ini
+bind = SUPER, Escape, exec, waymenu --input 'k '
+```
+
 Then enter expressions such as `=2+2` or `=1 mile -> km`; Enter copies the result with
 `wl-copy`. For development, `WAYMENU_PLUGIN_DIR=/path/to/plugins` overrides the plugin
 directory. The plugin SDK and ABI v2 contract are in `plugin-api/`.

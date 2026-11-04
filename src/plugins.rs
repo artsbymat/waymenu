@@ -658,6 +658,34 @@ mod tests {
     }
 
     #[test]
+    fn loads_and_executes_built_kill_plugin() {
+        let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/kill/target/release/libkill.so");
+        if !so_path.exists() {
+            return;
+        }
+        let plugin = DynamicPlugin::load(&so_path).unwrap();
+        assert_eq!(plugin.id(), "kill");
+        assert_eq!(plugin.prefix(), "k ");
+
+        let results = plugin.search("");
+        assert!(!results.is_empty());
+        assert!(!results[0].title.is_empty());
+
+        let dummy = SearchResult {
+            id: "".into(),
+            title: "".into(),
+            description: "".into(),
+            score: 0,
+            icon: None,
+            image: None,
+            metadata: None,
+        };
+        let action = plugin.action(&dummy);
+        assert_eq!(action, Action::None);
+    }
+
+    #[test]
     fn dynamic_plugins_are_optional_and_only_shared_objects_are_discovered() {
         let directory =
             std::env::temp_dir().join(format!("waymenu-plugins-{}", std::process::id()));

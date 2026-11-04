@@ -1854,7 +1854,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("waymenu-landscape-{}.png", std::process::id()));
         let mut pixels = vec![200u8; 80 * 40 * 4];
-        for chunk in pixels.chunks_exact_mut(4) {
+        for chunk in pixels.as_chunks_mut::<4>().0 {
             chunk[3] = 255;
         }
         image::save_buffer_with_format(

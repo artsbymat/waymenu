@@ -13,6 +13,7 @@ exclude = [
     "plugins/youtube",
     "plugins/emoji",
     "plugins/clipboard",
+    "plugins/kill",
 ]
 resolver = "2"
 
