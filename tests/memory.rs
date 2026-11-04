@@ -64,3 +64,19 @@ fn large_dmenu_input_stays_below_peak_memory_target() {
         "large dmenu peak RSS was {peak_kib} KiB"
     );
 }
+
+#[test]
+fn plugin_query_stays_below_peak_memory_target() {
+    let child = Command::new(env!("CARGO_BIN_EXE_waymenu"))
+        .args(["--query", "firefox"])
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let (status, peak_kib) = wait_with_peak_rss(child);
+    eprintln!("plugin_query_peak_rss_kib={peak_kib}");
+    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+    assert!(
+        peak_kib < 50 * 1024,
+        "plugin query peak RSS was {peak_kib} KiB"
+    );
+}

@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicPtr, Ordering},
         Arc,
     },
     time::Duration,
@@ -19,6 +19,7 @@ pub trait Plugin {
     fn description(&self) -> &str;
     fn search(&self, query: &str) -> Vec<SearchResult>;
     fn action(&self, result: &SearchResult) -> Action;
+    fn unload(&self) {}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -194,6 +195,14 @@ impl PluginManager {
             })
             .collect()
     }
+
+    pub fn unload_unused(&self, active_plugin_id: Option<&str>) {
+        for plugin in &self.plugins {
+            if active_plugin_id != Some(plugin.id()) {
+                plugin.unload();
+            }
+        }
+    }
 }
 
 fn dynamic_plugin_dir() -> PathBuf {
@@ -217,7 +226,7 @@ fn discover_dynamic_plugins(directory: &Path) -> io::Result<Vec<PathBuf>> {
 struct DynamicPlugin {
     _library: Library,
     api: waymenu_plugin_api::PluginApiV2,
-    state: *mut c_void,
+    state: AtomicPtr<c_void>,
     id: String,
     prefix: String,
     name: String,
@@ -229,7 +238,7 @@ impl DynamicPlugin {
         // SAFETY: This opens a user-installed native plugin. The plugin directory is an
         // explicit trust boundary; its ABI entry point and function table are checked below.
         let library = unsafe { Library::new(path) }.map_err(|error| error.to_string())?;
-        // SAFETY: The plugin SDK requires each shared library to export this exact v1 symbol.
+        // SAFETY: The plugin SDK requires each shared library to export this exact v1/v2 symbol.
         let entry = unsafe {
             library.get::<unsafe extern "C" fn() -> waymenu_plugin_api::PluginApiV2>(
                 b"waymenu_plugin_v2\0",
@@ -245,15 +254,15 @@ impl DynamicPlugin {
                 waymenu_plugin_api::ABI_VERSION
             ));
         }
-        let create = api.create.ok_or("plugin has no create callback")?;
-        if api.destroy.is_none()
+        if api.create.is_none()
+            || api.destroy.is_none()
             || api.search.is_none()
             || api.action.is_none()
             || api.free_json.is_none()
         {
             return Err("plugin API is missing a required callback".into());
         }
-        // SAFETY: Metadata pointers must be static NUL-terminated strings per ABI v1.
+        // SAFETY: Metadata pointers must be static NUL-terminated strings per ABI v1/v2.
         let id = unsafe { copy_c_string(api.id) }.ok_or("plugin id is null")?;
         // SAFETY: Same metadata contract as above.
         let prefix = unsafe { copy_c_string(api.prefix) }.ok_or("plugin prefix is null")?;
@@ -265,20 +274,56 @@ impl DynamicPlugin {
         if id.is_empty() || prefix.is_empty() || name.is_empty() || description.is_empty() {
             return Err("plugin id, prefix, name, and description must not be empty".into());
         }
-        // SAFETY: create is a valid ABI v1 callback from the still-live library.
-        let state = unsafe { create() };
-        if state.is_null() {
-            return Err("plugin initialization failed".into());
-        }
+        // Note: Do not call create() here. Plugins are lazily initialized when their prefix is used.
         Ok(Self {
             _library: library,
             api,
-            state,
+            state: AtomicPtr::new(std::ptr::null_mut()),
             id,
             prefix,
             name,
             description,
         })
+    }
+
+    fn ensure_state(&self) -> *mut c_void {
+        let current = self.state.load(Ordering::Acquire);
+        if !current.is_null() {
+            return current;
+        }
+        let Some(create) = self.api.create else {
+            return std::ptr::null_mut();
+        };
+        // SAFETY: create is a valid ABI v2 callback from the still-live library.
+        let state = unsafe { create() };
+        if state.is_null() {
+            return std::ptr::null_mut();
+        }
+        match self.state.compare_exchange(
+            std::ptr::null_mut(),
+            state,
+            Ordering::Release,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => state,
+            Err(existing) => {
+                if let Some(destroy) = self.api.destroy {
+                    // SAFETY: state came from create and destroy is from the same loaded library.
+                    unsafe { destroy(state) };
+                }
+                existing
+            }
+        }
+    }
+
+    fn unload(&self) {
+        let state = self.state.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !state.is_null() {
+            if let Some(destroy) = self.api.destroy {
+                // SAFETY: state came from create and destroy is from the same loaded library.
+                unsafe { destroy(state) };
+            }
+        }
     }
 
     fn response_json(&self, pointer: *mut c_char) -> Option<String> {
@@ -298,11 +343,7 @@ impl DynamicPlugin {
 
 impl Drop for DynamicPlugin {
     fn drop(&mut self) {
-        if !self.state.is_null() {
-            // SAFETY: state came from create and destroy is from the same loaded library.
-            unsafe { (self.api.destroy.unwrap())(self.state) };
-            self.state = std::ptr::null_mut();
-        }
+        self.unload();
     }
 }
 
@@ -336,11 +377,15 @@ impl Plugin for DynamicPlugin {
         &self.description
     }
     fn search(&self, query: &str) -> Vec<SearchResult> {
+        let state = self.ensure_state();
+        if state.is_null() {
+            return Vec::new();
+        }
         let Ok(query) = CString::new(query) else {
             return Vec::new();
         };
         // SAFETY: query is NUL-terminated and the state belongs to this plugin library.
-        let pointer = unsafe { (self.api.search.unwrap())(self.state, query.as_ptr()) };
+        let pointer = unsafe { (self.api.search.unwrap())(state, query.as_ptr()) };
         let Some(response) = self.response_json(pointer) else {
             return Vec::new();
         };
@@ -359,11 +404,15 @@ impl Plugin for DynamicPlugin {
             .collect()
     }
     fn action(&self, result: &SearchResult) -> Action {
+        let state = self.ensure_state();
+        if state.is_null() {
+            return Action::None;
+        }
         let Ok(id) = CString::new(result.id.as_str()) else {
             return Action::None;
         };
         // SAFETY: id is NUL-terminated and the state belongs to this plugin library.
-        let pointer = unsafe { (self.api.action.unwrap())(self.state, id.as_ptr()) };
+        let pointer = unsafe { (self.api.action.unwrap())(state, id.as_ptr()) };
         let Some(response) = self.response_json(pointer) else {
             return Action::None;
         };
@@ -380,6 +429,9 @@ impl Plugin for DynamicPlugin {
             waymenu_plugin_api::PluginAction::OpenUrl(url) => Action::OpenUrl(url),
             waymenu_plugin_api::PluginAction::None => Action::None,
         }
+    }
+    fn unload(&self) {
+        self.unload();
     }
 }
 
@@ -507,8 +559,12 @@ mod tests {
         let plugin = DynamicPlugin::load(&so_path).unwrap();
         assert_eq!(plugin.id(), "google");
         assert_eq!(plugin.prefix(), "g ");
+        // Ensure state is uninitialized before search
+        assert!(plugin.state.load(Ordering::Acquire).is_null());
 
         let results = plugin.search("hyprland linux");
+        // Ensure state was initialized on demand
+        assert!(!plugin.state.load(Ordering::Acquire).is_null());
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0].id,
@@ -521,6 +577,10 @@ mod tests {
             action,
             Action::OpenUrl("https://www.google.com/search?q=hyprland+linux".into())
         );
+
+        // Ensure unload releases state
+        plugin.unload();
+        assert!(plugin.state.load(Ordering::Acquire).is_null());
     }
 
     #[test]

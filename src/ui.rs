@@ -1,4 +1,5 @@
 use std::{
+    cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     env, fs,
     path::{Path, PathBuf},
@@ -496,8 +497,15 @@ impl UiModel {
             .as_ref()
             .and_then(|plugins| plugins.select(&self.input))
         {
+            let id = plugin.id().to_owned();
             self.results = plugin.search(query);
+            if let Some(plugins) = &self.plugins {
+                plugins.unload_unused(Some(&id));
+            }
             return;
+        }
+        if let Some(plugins) = &self.plugins {
+            plugins.unload_unused(None);
         }
         if let Some(query) = self.input.strip_prefix(&self.config.binary.prefix) {
             let query = query.trim_start();
@@ -637,8 +645,10 @@ fn help_row(id: &str, title: &str, description: &str) -> SearchResult {
 
 pub struct Renderer {
     font: Option<FontArc>,
-    fallback_font: Option<FontArc>,
-    emoji_font_data: Option<Vec<u8>>,
+    fallback_font: RefCell<Option<FontArc>>,
+    fallback_attempted: Cell<bool>,
+    emoji_font_data: RefCell<Option<Vec<u8>>>,
+    emoji_attempted: Cell<bool>,
     emoji_cache: HashMap<(char, u32), Option<IconBitmap>>,
     emoji_order: VecDeque<(char, u32)>,
     icons: HashMap<String, Option<IconBitmap>>,
@@ -691,12 +701,12 @@ impl Renderer {
                 "no usable TrueType/OpenType font was found",
             )
         })?;
-        let fallback_font = load_fallback_font();
-        let emoji_font_data = load_emoji_font_data();
         Ok(Self {
             font: Some(font),
-            fallback_font,
-            emoji_font_data,
+            fallback_font: RefCell::new(None),
+            fallback_attempted: Cell::new(false),
+            emoji_font_data: RefCell::new(None),
+            emoji_attempted: Cell::new(false),
             emoji_cache: HashMap::new(),
             emoji_order: VecDeque::new(),
             icons: HashMap::new(),
@@ -709,6 +719,22 @@ impl Renderer {
             first_visible: 0,
             cursor_visible: true,
         })
+    }
+
+    fn ensure_fallback_font(&self) -> Option<FontArc> {
+        if !self.fallback_attempted.get() {
+            self.fallback_attempted.set(true);
+            *self.fallback_font.borrow_mut() = load_fallback_font();
+        }
+        self.fallback_font.borrow().clone()
+    }
+
+    fn ensure_emoji_font_data(&self) -> bool {
+        if !self.emoji_attempted.get() {
+            self.emoji_attempted.set(true);
+            *self.emoji_font_data.borrow_mut() = load_emoji_font_data();
+        }
+        self.emoji_font_data.borrow().is_some()
     }
 
     pub fn set_cursor_visible(&mut self, visible: bool) {
@@ -759,7 +785,7 @@ impl Renderer {
                 }
                 x += scaled.h_advance(id);
                 previous = Some(id);
-            } else if let Some(fallback) = &self.fallback_font {
+            } else if let Some(fallback) = self.ensure_fallback_font() {
                 let f_scaled = fallback.as_scaled(PxScale::from(size));
                 let f_id = f_scaled.glyph_id(ch);
                 if f_id.0 != 0 {
@@ -1081,7 +1107,11 @@ impl Renderer {
     }
 
     fn decode_emoji(&self, ch: char, size: u32) -> Option<IconBitmap> {
-        let data = self.emoji_font_data.as_ref()?;
+        if !self.ensure_emoji_font_data() {
+            return None;
+        }
+        let borrowed = self.emoji_font_data.borrow();
+        let data = borrowed.as_deref()?;
         let face = Face::parse(data, 0).ok()?;
         let gid = face.glyph_index(ch)?;
         let raster = face.glyph_raster_image(gid, (size * 2) as u16)?;
@@ -1128,7 +1158,7 @@ impl Renderer {
         let Some(font) = self.font.clone() else {
             return;
         };
-        let fallback_font = self.fallback_font.clone();
+        let mut fallback_font: Option<FontArc> = None;
         let scaled = font.as_scaled(PxScale::from(size));
         let space_width = scaled.h_advance(scaled.glyph_id(' ')).max(size * 0.5);
         let tab_size = 8.0 * space_width;
@@ -1206,6 +1236,9 @@ impl Renderer {
                     x += emoji_size as f32 + 2.0;
                     previous = None;
                     continue;
+                }
+                if fallback_font.is_none() && !self.fallback_attempted.get() {
+                    fallback_font = self.ensure_fallback_font();
                 }
                 if let Some(fallback) = &fallback_font {
                     let f_scaled = fallback.as_scaled(PxScale::from(size));
@@ -1308,20 +1341,10 @@ fn load_font(family: &str) -> Option<FontArc> {
 }
 
 fn load_fallback_font() -> Option<FontArc> {
-    let matched = std::process::Command::new("fc-match")
-        .args(["-f", "%{file}", "monospace:charset=2600,1f600"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(PathBuf::from);
-    if let Some(font) = matched.as_deref().and_then(read_font) {
-        return Some(font);
-    }
     for path in [
+        "/usr/share/fonts/TTF/SymbolsNerdFont-Regular.ttf",
         "/usr/share/fonts/wps-fonts/seguiemj.ttf",
         "/usr/share/fonts/wps-fonts/seguisym.ttf",
-        "/usr/share/fonts/TTF/SymbolsNerdFont-Regular.ttf",
         "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
         "/usr/share/fonts/noto/NotoEmoji-Regular.ttf",
         "/usr/share/fonts/truetype/ancient-scripts/Symbola.ttf",
@@ -1331,6 +1354,16 @@ fn load_fallback_font() -> Option<FontArc> {
         if let Some(font) = read_font(Path::new(path)) {
             return Some(font);
         }
+    }
+    let matched = std::process::Command::new("fc-match")
+        .args(["-f", "%{file}", "monospace:charset=2600,1f600"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(PathBuf::from);
+    if let Some(font) = matched.as_deref().and_then(read_font) {
+        return Some(font);
     }
     None
 }
