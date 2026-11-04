@@ -444,6 +444,10 @@ impl UiModel {
             && self.binaries.is_none()
     }
 
+    pub fn is_shell_input(&self) -> bool {
+        self.input.starts_with(&self.config.plugins.shell_prefix)
+    }
+
     pub fn set_binaries(&mut self, binaries: Vec<Binary>) {
         self.binaries = Some(binaries);
         self.refresh();
@@ -879,14 +883,14 @@ impl Renderer {
                     self.theme.selected,
                 );
             }
-            let visual = result.image.as_ref().or(result.icon.as_ref());
+            let visual = result.icon.as_ref().or(result.image.as_ref());
             let text_x = if self.show_icons && visual.is_some() {
                 74.0
             } else {
                 28.0
             };
             if let Some(visual) = visual.filter(|_| self.show_icons) {
-                self.draw_image(&mut pixmap, visual, 26, (y - 1.0) as i32, 36);
+                self.draw_image(&mut pixmap, visual, 26, (y + 2.0).round() as i32, 36);
             }
             let (title_y, desc_y) = if result.description.is_empty() || !self.show_description {
                 (y + 24.0, y + 24.0)
@@ -912,13 +916,15 @@ impl Renderer {
             }
             if index == model.selected {
                 if let Some(preview) = result.image.as_ref() {
-                    self.draw_image(
-                        &mut pixmap,
-                        preview,
-                        width.saturating_sub(118) as i32,
-                        (y - 2.0) as i32,
-                        48,
-                    );
+                    if visual != Some(preview) {
+                        self.draw_image(
+                            &mut pixmap,
+                            preview,
+                            width.saturating_sub(118) as i32,
+                            (y - 2.0) as i32,
+                            48,
+                        );
+                    }
                 }
             }
         }
@@ -941,6 +947,58 @@ impl Renderer {
     }
 
     fn draw_image(&mut self, pixmap: &mut PixmapMut<'_>, name: &str, x: i32, y: i32, size: u32) {
+        if let Some(color_spec) = name.strip_prefix("color:") {
+            if let Some(color) = parse_hex_color(color_spec) {
+                let radius = 6.0_f32.min(size as f32 / 4.0);
+                if color[3] < 255 {
+                    fill_round_rect(
+                        pixmap,
+                        x as f32,
+                        y as f32,
+                        size as f32,
+                        size as f32,
+                        radius,
+                        [180, 180, 180, 255],
+                    );
+                }
+                fill_round_rect(
+                    pixmap,
+                    x as f32,
+                    y as f32,
+                    size as f32,
+                    size as f32,
+                    radius,
+                    [255, 255, 255, 40],
+                );
+                fill_round_rect(
+                    pixmap,
+                    (x + 1) as f32,
+                    (y + 1) as f32,
+                    (size.saturating_sub(2)) as f32,
+                    (size.saturating_sub(2)) as f32,
+                    (radius - 1.0).max(0.0),
+                    color,
+                );
+                return;
+            }
+        }
+        if let Some(ch) = name
+            .strip_prefix("emoji:")
+            .and_then(|s| s.chars().next())
+            .or_else(|| {
+                let mut chars = name.chars();
+                let first = chars.next()?;
+                if chars.next().is_none() && is_emoji(first) {
+                    Some(first)
+                } else {
+                    None
+                }
+            })
+        {
+            if self.draw_emoji(pixmap, ch, x + 2, y + 2, size.saturating_sub(4)) {
+                return;
+            }
+        }
         let cache_key = format!("{size}:{name}");
         if !self.icons.contains_key(&cache_key) {
             let bitmap = resolve_icon(name).and_then(|path| decode_image(&path, size));
@@ -955,13 +1013,15 @@ impl Renderer {
         let Some(Some(icon)) = self.icons.get(&cache_key) else {
             return;
         };
+        let offset_x = (size.saturating_sub(icon.width) / 2) as i32;
+        let offset_y = (size.saturating_sub(icon.height) / 2) as i32;
         for row in 0..icon.height {
             for column in 0..icon.width {
                 let offset = ((row * icon.width + column) * 4) as usize;
                 blend(
                     pixmap,
-                    x + column as i32,
-                    y + row as i32,
+                    x + offset_x + column as i32,
+                    y + offset_y + row as i32,
                     [
                         icon.pixels[offset],
                         icon.pixels[offset + 1],
@@ -1581,6 +1641,39 @@ fn decode_image(path: &Path, size: u32) -> Option<IconBitmap> {
     })
 }
 
+fn parse_hex_color(hex: &str) -> Option<[u8; 4]> {
+    let hex = hex.trim_start_matches('#');
+    match hex.len() {
+        3 => {
+            let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
+            let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
+            let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
+            Some([r, g, b, 255])
+        }
+        4 => {
+            let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
+            let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
+            let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
+            let a = u8::from_str_radix(&hex[3..4], 16).ok()? * 17;
+            Some([r, g, b, a])
+        }
+        6 => {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            Some([r, g, b, 255])
+        }
+        8 => {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
+            Some([r, g, b, a])
+        }
+        _ => None,
+    }
+}
+
 fn fill_round_rect(
     pixmap: &mut PixmapMut<'_>,
     x: f32,
@@ -1697,6 +1790,71 @@ mod tests {
             },
         );
         assert_eq!(model.selected_action(), Action::CopyText("missing".into()));
+    }
+
+    #[test]
+    fn renderer_draws_color_rounded_swatch() {
+        let mut model = UiModel::dmenu(
+            Config::default(),
+            vec!["#3498db".into()],
+            DmenuModelOptions {
+                prompt: "Color".into(),
+                initial_query: String::new(),
+                print_query: false,
+                fuzzy: true,
+                case_sensitive: false,
+                password: false,
+            },
+        );
+        model.results[0].icon = Some("color:#3498dbff".into());
+        let mut renderer = Renderer::new(&Config::default()).unwrap();
+        let mut canvas = vec![0u8; 640 * 240 * 4];
+        renderer.draw(&mut canvas, 640, 240, &model);
+        let offset = ((98 * 640 + 44) * 4) as usize;
+        assert_eq!(canvas[offset], 52);
+        assert_eq!(canvas[offset + 1], 152);
+        assert_eq!(canvas[offset + 2], 219);
+    }
+
+    #[test]
+    fn renderer_centers_image_thumbnail_vertically() {
+        let path =
+            std::env::temp_dir().join(format!("waymenu-landscape-{}.png", std::process::id()));
+        let mut pixels = vec![200u8; 80 * 40 * 4];
+        for chunk in pixels.chunks_exact_mut(4) {
+            chunk[3] = 255;
+        }
+        image::save_buffer_with_format(
+            &path,
+            &pixels,
+            80,
+            40,
+            image::ColorType::Rgba8,
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+
+        let mut model = UiModel::dmenu(
+            Config::default(),
+            vec!["Landscape".into()],
+            DmenuModelOptions {
+                prompt: "Image".into(),
+                initial_query: String::new(),
+                print_query: false,
+                fuzzy: true,
+                case_sensitive: false,
+                password: false,
+            },
+        );
+        model.results[0].icon = Some(path.display().to_string());
+        let mut renderer = Renderer::new(&Config::default()).unwrap();
+        let mut canvas = vec![0u8; 640 * 240 * 4];
+        renderer.draw(&mut canvas, 640, 240, &model);
+
+        let center_offset = ((98 * 640 + 44) * 4) as usize;
+        assert_eq!(canvas[center_offset], 200);
+
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

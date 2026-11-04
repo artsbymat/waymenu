@@ -540,6 +540,18 @@ mod tests {
     }
 
     #[test]
+    fn loads_and_executes_built_clipboard_plugin() {
+        let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/clipboard/target/release/libclipboard.so");
+        if !so_path.exists() {
+            return;
+        }
+        let plugin = DynamicPlugin::load(&so_path).unwrap();
+        assert_eq!(plugin.id(), "clipboard");
+        assert_eq!(plugin.prefix(), "cb ");
+    }
+
+    #[test]
     fn loads_and_executes_built_emoji_plugin() {
         let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("plugins/emoji/target/release/libemoji.so");

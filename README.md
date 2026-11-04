@@ -39,6 +39,25 @@ cp plugins/rink/target/release/librink.so \
   "${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins/"
 ```
 
+The Clipboard plugin integrates with `clipvault` (or `cliphist`) using the `cb ` prefix:
+
+```sh
+cargo build --manifest-path plugins/clipboard/Cargo.toml --release
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins"
+cp plugins/clipboard/target/release/libclipboard.so \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins/"
+```
+
+It features:
+- **Color previews** in rounded squares for HEX, RGB, HSL, HSV, CMYK, and OKLCH color codes.
+- **Link indicator** (`🌍`) for URLs.
+- **Image preview & dimensions** for copied images.
+
+You can bind it in Hyprland directly:
+```ini
+bind = SUPER, V, exec, waymenu --input 'cb '
+```
+
 Then enter expressions such as `=2+2` or `=1 mile -> km`; Enter copies the result with
 `wl-copy`. For development, `WAYMENU_PLUGIN_DIR=/path/to/plugins` overrides the plugin
 directory. The plugin SDK and ABI v2 contract are in `plugin-api/`.

@@ -374,29 +374,31 @@ impl State {
 
     fn execute_selection(&mut self) {
         let action = self.model.selected_action();
-        let Action::RunShell(command) = action else {
-            self.action = action;
-            self.model.exit = true;
-            return;
-        };
-        if self.shell_running {
-            return;
+        if self.model.is_shell_input() {
+            if let Action::RunShell(command) = action {
+                if self.shell_running {
+                    return;
+                }
+                self.shell_running = true;
+                self.model.show_shell_running(&command);
+                let sender = self.worker_sender.clone();
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                self.shell_cancel = Some(cancel.clone());
+                let environment_shell = std::env::var("SHELL").ok();
+                let shell = self
+                    .shell
+                    .clone()
+                    .or(environment_shell)
+                    .unwrap_or_else(|| "/bin/sh".into());
+                std::thread::spawn(move || {
+                    let message = execute_shell_cancellable(shell, command, cancel);
+                    let _ = sender.send(WorkerMessage::Shell(message));
+                });
+                return;
+            }
         }
-        self.shell_running = true;
-        self.model.show_shell_running(&command);
-        let sender = self.worker_sender.clone();
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.shell_cancel = Some(cancel.clone());
-        let environment_shell = std::env::var("SHELL").ok();
-        let shell = self
-            .shell
-            .clone()
-            .or(environment_shell)
-            .unwrap_or_else(|| "/bin/sh".into());
-        std::thread::spawn(move || {
-            let message = execute_shell_cancellable(shell, command, cancel);
-            let _ = sender.send(WorkerMessage::Shell(message));
-        });
+        self.action = action;
+        self.model.exit = true;
     }
 
     fn maybe_start_binary_scan(&mut self) {

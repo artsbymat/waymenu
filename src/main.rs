@@ -32,9 +32,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let query = option_string(&args, "--query")?.map(str::to_owned);
     let mode = option_string(&args, "--mode")?;
-    if mode.is_some_and(|mode| mode != "binary" && mode != "applications") {
-        return Err("--mode must be 'applications' or 'binary'".into());
+    if mode.is_some_and(|mode| mode != "binary" && mode != "applications" && mode != "clipboard") {
+        return Err("--mode must be 'applications', 'binary', or 'clipboard'".into());
     }
+    let input = option_string(&args, "--input")?
+        .or_else(|| option_string(&args, "--prefix").ok().flatten());
     let mut config = Config::load_or_create()?;
     if let Some(monitor) = option_string(&args, "--monitor")? {
         config.general.monitor = Some(monitor.to_owned());
@@ -44,6 +46,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             && !query.starts_with(&config.binary.prefix)
         {
             format!("{}{query}", config.binary.prefix)
+        } else if mode.is_some_and(|mode| mode == "clipboard") && !query.starts_with("cb ") {
+            format!("cb {query}")
         } else {
             query
         };
@@ -52,6 +56,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let action = if mode.is_some_and(|mode| mode == "binary") {
         let prefix = config.binary.prefix.clone();
         waymenu::wayland::run_with_input(config.clone(), &prefix)?
+    } else if mode.is_some_and(|mode| mode == "clipboard") {
+        waymenu::wayland::run_with_input(config.clone(), "cb ")?
+    } else if let Some(input) = input {
+        waymenu::wayland::run_with_input(config.clone(), input)?
     } else {
         waymenu::wayland::run(config.clone())?
     };
@@ -283,5 +291,5 @@ fn option_string<'a>(
 }
 
 fn print_help() {
-    println!("waymenu {}\n\nUsage: waymenu [OPTIONS]\n\n  --query TEXT       Search without opening a UI\n  --mode MODE        Open applications or binary mode\n  --dmenu            Read newline-separated choices from stdin\n  --prompt TEXT      Prompt used with --dmenu\n  --lines NUMBER     Maximum visible dmenu results\n  --width PIXELS     Dmenu width\n  --height PIXELS    Dmenu height\n  --monitor OUTPUT   Output name, model, description, or zero-based index\n  --password         Mask dmenu input\n  --no-fuzzy         Disable dmenu fuzzy matching\n  --case-sensitive   Match dmenu input case-sensitively\n  --print-query      Return raw query when dmenu has no match\n  --help             Show this help\n  --version          Show version\n\nPrefixes: $ searches PATH; ! executes only the explicitly submitted command.", env!("CARGO_PKG_VERSION"));
+    println!("waymenu {}\n\nUsage: waymenu [OPTIONS]\n\n  --query TEXT       Search without opening a UI\n  --mode MODE        Open applications, binary, or clipboard mode\n  --input TEXT       Launch with initial input text or prefix\n  --dmenu            Read newline-separated choices from stdin\n  --prompt TEXT      Prompt used with --dmenu\n  --lines NUMBER     Maximum visible dmenu results\n  --width PIXELS     Dmenu width\n  --height PIXELS    Dmenu height\n  --monitor OUTPUT   Output name, model, description, or zero-based index\n  --password         Mask dmenu input\n  --no-fuzzy         Disable dmenu fuzzy matching\n  --case-sensitive   Match dmenu input case-sensitively\n  --print-query      Return raw query when dmenu has no match\n  --help             Show this help\n  --version          Show version\n\nPrefixes: $ searches PATH; ! executes only the explicitly submitted command.", env!("CARGO_PKG_VERSION"));
 }
