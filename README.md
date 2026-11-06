@@ -126,6 +126,74 @@ Configuration is created at `$XDG_CONFIG_HOME/waymenu/config.toml` (falling back
 `$XDG_STATE_HOME/waymenu/history.json`. Missing, inaccessible, or corrupt history never
 prevents the launcher from starting.
 
+## Configuration
+
+Configuration is located at `$XDG_CONFIG_HOME/waymenu/config.toml` (or `~/.config/waymenu/config.toml`). Below is a complete annotated example configuration:
+
+```toml
+[general]
+theme = "dark"            # "dark", "light", or "custom"
+width = 640               # Window width in pixels (240 - 4096)
+height = 574              # Optional fixed height in pixels (omitted for auto-fit)
+max_results = 8           # Maximum visible results (1 - 100)
+fuzzy_search = true       # Enable fuzzy search engine
+remember_history = true   # Rank frequently and recently launched applications
+# monitor = "DP-1"        # Optional target monitor (name, description, or index)
+# terminal = "foot"       # Terminal emulator used for terminal desktop apps
+
+[appearance]
+font_family = "sans-serif" # System font name
+font_size = 14.0           # Base font size
+border_radius = 12.0       # Rounded corner radius (0 - 64)
+show_icons = true          # Display application and plugin icons
+show_description = true    # Display secondary description lines
+
+[colors]
+# Optional color overrides (Hex: #RGB, #RGBA, #RRGGBB, #RRGGBBAA, or rgb/rgba)
+background = "#191b22"     # Window background (supports alpha transparency)
+input      = "#2b2e39"     # Search bar background
+selected   = "#3f4557"     # Selected result row (alias: selection)
+primary    = "#f5f5f8"     # Input text, titles, caret (alias: text)
+secondary  = "#a6abb9"     # Descriptions, placeholders, footer (alias: subtext)
+highlight  = "#69aaff"     # Fuzzy search matching characters (alias: match, accent)
+# border   = "#5e81ac"     # Optional window border stroke
+
+[plugins]
+shell_prefix = "!"         # Prefix to trigger shell command execution
+# shell = "/bin/bash"      # Shell path (defaults to $SHELL or /bin/sh)
+dynamic = true             # Enable loading .so plugins from plugins/ directory
+
+[binary]
+prefix = "$ "              # Prefix to trigger $PATH binary executable search
+show_path = true           # Show executable directory path in results
+
+[history]
+enabled = true             # Persist launch frequency and recency
+max_entries = 500          # Maximum entries stored in history.json
+
+[keybindings]
+execute             = "Return"
+close               = "Escape"
+autocomplete        = "Tab"
+next                = "Ctrl+n"
+previous            = "Ctrl+p"
+next_arrow          = "Down"
+previous_arrow      = "Up"
+left_arrow          = "Left"
+right_arrow         = "Right"
+clear               = "Ctrl+u"
+backspace           = "BackSpace"
+delete_word         = "Ctrl+w"
+delete_word_back    = "Ctrl+BackSpace"
+delete_forward      = "Delete"
+delete_word_forward = "Ctrl+Delete"
+word_left           = "Ctrl+Left"
+word_right          = "Ctrl+Right"
+beginning           = "Ctrl+a"
+end                 = "Ctrl+e"
+help                = "F1"
+```
+
 Waymenu requires `wlr-layer-shell`; compositors without it receive an explicit error.
 It does not silently fall back to X11 or a heavyweight toolkit.
 

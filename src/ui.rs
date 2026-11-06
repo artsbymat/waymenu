@@ -10,8 +10,12 @@ use tiny_skia::{Color, Paint, PathBuilder, PixmapMut, Rect, Transform};
 use ttf_parser::{Face, RasterImageFormat};
 
 use crate::{
-    applications::DesktopApplication, binary::Binary, config::Config, history::History,
-    plugins::PluginManager, search, Action, SearchResult,
+    applications::DesktopApplication,
+    binary::Binary,
+    config::{parse_color, Config},
+    history::History,
+    plugins::PluginManager,
+    search, Action, SearchResult,
 };
 
 pub struct UiModel {
@@ -836,33 +840,74 @@ struct IconBitmap {
     pixels: Vec<u8>,
 }
 
-struct Theme {
-    background: [u8; 4],
-    input: [u8; 4],
-    selected: [u8; 4],
-    primary: [u8; 4],
-    secondary: [u8; 4],
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Theme {
+    pub background: [u8; 4],
+    pub input: [u8; 4],
+    pub selected: [u8; 4],
+    pub primary: [u8; 4],
+    pub secondary: [u8; 4],
+    pub highlight: [u8; 4],
+    pub border: Option<[u8; 4]>,
+}
+
+impl Theme {
+    pub const DARK: Self = Self {
+        background: [25, 27, 34, 255],
+        input: [43, 46, 57, 255],
+        selected: [63, 69, 87, 255],
+        primary: [245, 245, 248, 255],
+        secondary: [166, 171, 185, 255],
+        highlight: [105, 170, 255, 255],
+        border: None,
+    };
+
+    pub const LIGHT: Self = Self {
+        background: [242, 243, 247, 255],
+        input: [255, 255, 255, 255],
+        selected: [216, 224, 242, 255],
+        primary: [27, 30, 38, 255],
+        secondary: [91, 97, 112, 255],
+        highlight: [0, 102, 204, 255],
+        border: None,
+    };
+
+    pub fn from_config(config: &Config) -> Self {
+        let mut theme = if config.general.theme.eq_ignore_ascii_case("light") {
+            Self::LIGHT
+        } else {
+            Self::DARK
+        };
+
+        if let Some(bg) = config.colors.background.as_deref().and_then(parse_color) {
+            theme.background = bg;
+        }
+        if let Some(inp) = config.colors.input.as_deref().and_then(parse_color) {
+            theme.input = inp;
+        }
+        if let Some(sel) = config.colors.selected.as_deref().and_then(parse_color) {
+            theme.selected = sel;
+        }
+        if let Some(pri) = config.colors.primary.as_deref().and_then(parse_color) {
+            theme.primary = pri;
+        }
+        if let Some(sec) = config.colors.secondary.as_deref().and_then(parse_color) {
+            theme.secondary = sec;
+        }
+        if let Some(hl) = config.colors.highlight.as_deref().and_then(parse_color) {
+            theme.highlight = hl;
+        }
+        if let Some(border) = config.colors.border.as_deref().and_then(parse_color) {
+            theme.border = Some(border);
+        }
+
+        theme
+    }
 }
 
 impl Renderer {
     pub fn new(config: &Config) -> std::io::Result<Self> {
-        let theme = if config.general.theme.eq_ignore_ascii_case("light") {
-            Theme {
-                background: [242, 243, 247, 255],
-                input: [255, 255, 255, 255],
-                selected: [216, 224, 242, 255],
-                primary: [27, 30, 38, 255],
-                secondary: [91, 97, 112, 255],
-            }
-        } else {
-            Theme {
-                background: [25, 27, 34, 255],
-                input: [43, 46, 57, 255],
-                selected: [63, 69, 87, 255],
-                primary: [245, 245, 248, 255],
-                secondary: [166, 171, 185, 255],
-            }
-        };
+        let theme = Theme::from_config(config);
         let font = load_font(&config.appearance.font_family).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -980,6 +1025,10 @@ impl Renderer {
         self.first_visible
     }
 
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
     pub fn item_at(
         &self,
         x: f64,
@@ -1013,7 +1062,7 @@ impl Renderer {
             self.theme.background[0],
             self.theme.background[1],
             self.theme.background[2],
-            255,
+            self.theme.background[3],
         ));
         fill_round_rect(
             &mut pixmap,
@@ -1138,11 +1187,20 @@ impl Renderer {
             11.0,
             self.theme.secondary,
         );
+        if let Some(border_color) = self.theme.border {
+            stroke_round_rect(
+                &mut pixmap,
+                (0.5, 0.5, width as f32 - 1.0, height as f32 - 1.0),
+                self.border_radius,
+                border_color,
+                1.0,
+            );
+        }
     }
 
     fn draw_image(&mut self, pixmap: &mut PixmapMut<'_>, name: &str, x: i32, y: i32, size: u32) {
         if let Some(color_spec) = name.strip_prefix("color:") {
-            if let Some(color) = parse_hex_color(color_spec) {
+            if let Some(color) = parse_color(color_spec) {
                 let radius = 6.0_f32.min(size as f32 / 4.0);
                 if color[3] < 255 {
                     fill_round_rect(
@@ -1367,7 +1425,7 @@ impl Renderer {
             if matched {
                 needles.next();
             }
-            let glyph_color = if matched { [105, 170, 255, 255] } else { color };
+            let glyph_color = if matched { self.theme.highlight } else { color };
 
             if is_emoji(ch) {
                 let emoji_y = (baseline - size * 0.82).round() as i32;
@@ -1860,51 +1918,14 @@ fn decode_image(path: &Path, size: u32) -> Option<IconBitmap> {
     })
 }
 
-fn parse_hex_color(hex: &str) -> Option<[u8; 4]> {
-    let hex = hex.trim_start_matches('#');
-    match hex.len() {
-        3 => {
-            let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
-            Some([r, g, b, 255])
-        }
-        4 => {
-            let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
-            let a = u8::from_str_radix(&hex[3..4], 16).ok()? * 17;
-            Some([r, g, b, a])
-        }
-        6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            Some([r, g, b, 255])
-        }
-        8 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
-            Some([r, g, b, a])
-        }
-        _ => None,
-    }
-}
-
-fn fill_round_rect(
-    pixmap: &mut PixmapMut<'_>,
+fn round_rect_path(
     x: f32,
     y: f32,
     width: f32,
     height: f32,
     corner_radius: f32,
-    rgba: [u8; 4],
-) {
-    let Some(rect) = Rect::from_xywh(x, y, width, height) else {
-        return;
-    };
+) -> Option<tiny_skia::Path> {
+    let rect = Rect::from_xywh(x, y, width, height)?;
     let mut builder = PathBuilder::new();
     let radius = corner_radius.max(0.0).min(width / 2.0).min(height / 2.0);
     if radius == 0.0 {
@@ -1943,7 +1964,21 @@ fn fill_round_rect(
         builder.cubic_to(x, y + radius - k, x + radius - k, y, x + radius, y);
         builder.close();
     }
-    let Some(path) = builder.finish() else { return };
+    builder.finish()
+}
+
+fn fill_round_rect(
+    pixmap: &mut PixmapMut<'_>,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    corner_radius: f32,
+    rgba: [u8; 4],
+) {
+    let Some(path) = round_rect_path(x, y, width, height, corner_radius) else {
+        return;
+    };
     let mut paint = Paint::default();
     paint.set_color_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]);
     pixmap.fill_path(
@@ -1953,6 +1988,26 @@ fn fill_round_rect(
         Transform::identity(),
         None,
     );
+}
+
+fn stroke_round_rect(
+    pixmap: &mut PixmapMut<'_>,
+    bounds: (f32, f32, f32, f32),
+    corner_radius: f32,
+    rgba: [u8; 4],
+    stroke_width: f32,
+) {
+    let (x, y, width, height) = bounds;
+    let Some(path) = round_rect_path(x, y, width, height, corner_radius) else {
+        return;
+    };
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]);
+    let stroke = tiny_skia::Stroke {
+        width: stroke_width,
+        ..Default::default()
+    };
+    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
 }
 
 fn blend(pixmap: &mut PixmapMut<'_>, x: i32, y: i32, color: [u8; 4], coverage: f32) {
@@ -2615,5 +2670,39 @@ mod tests {
         model.delete_word_backward();
         assert_eq!(model.input, "");
         assert_eq!(model.cursor(), 0);
+    }
+
+    #[test]
+    fn custom_theme_colors_override_and_render() {
+        let toml_str = r##"
+            [general]
+            theme = "custom"
+
+            [colors]
+            background = "#282a36"
+            input = "#44475a"
+            selected = "#6272a4"
+            primary = "#f8f8f2"
+            secondary = "#bfbfbf"
+            highlight = "#ff79c6"
+            border = "#bd93f9"
+        "##;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let mut renderer = Renderer::new(&config).unwrap();
+
+        // 1. Theme colors match custom hex values
+        assert_eq!(renderer.theme().background, [40, 42, 54, 255]);
+        assert_eq!(renderer.theme().input, [68, 71, 90, 255]);
+        assert_eq!(renderer.theme().selected, [98, 114, 164, 255]);
+        assert_eq!(renderer.theme().primary, [248, 248, 242, 255]);
+        assert_eq!(renderer.theme().secondary, [191, 191, 191, 255]);
+        assert_eq!(renderer.theme().highlight, [255, 121, 198, 255]);
+        assert_eq!(renderer.theme().border, Some([189, 147, 249, 255]));
+
+        // 2. Draws with custom colors and border into canvas without panic
+        let model = UiModel::new(config);
+        let mut canvas = vec![0u8; 640 * 400 * 4];
+        renderer.draw(&mut canvas, 640, 400, &model);
+        assert!(canvas.iter().any(|&b| b != 0));
     }
 }
