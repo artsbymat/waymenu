@@ -25,7 +25,17 @@ impl Binding {
                 "shift" => binding.shift = true,
                 "super" | "logo" | "meta" => binding.logo = true,
                 "" => return Err("empty keybinding component".into()),
-                key if binding.key.is_empty() => binding.key = key.to_owned(),
+                key if binding.key.is_empty() => {
+                    let normalized = match key {
+                        "del" => "delete",
+                        "leftarrow" => "left",
+                        "rightarrow" => "right",
+                        "uparrow" => "up",
+                        "downarrow" => "down",
+                        other => other,
+                    };
+                    binding.key = normalized.to_owned();
+                }
                 _ => return Err(format!("keybinding {input:?} has more than one key")),
             }
         }
@@ -42,7 +52,15 @@ impl Binding {
             .strip_prefix("XK_")
             .unwrap_or_else(|| keysym.name().unwrap_or_default())
             .to_ascii_lowercase();
-        let name = if name == "kp_enter" { "return" } else { &name };
+        let name = match name.as_str() {
+            "kp_enter" => "return",
+            "kp_delete" => "delete",
+            "kp_left" => "left",
+            "kp_right" => "right",
+            "kp_up" => "up",
+            "kp_down" => "down",
+            other => other,
+        };
         self.ctrl == modifiers.ctrl
             && self.alt == modifiers.alt
             && self.shift == modifiers.shift
@@ -74,5 +92,39 @@ mod tests {
         assert!(Binding::parse("F1")
             .unwrap()
             .matches(Keysym::F1, Modifiers::default()));
+        assert!(Binding::parse("Delete")
+            .unwrap()
+            .matches(Keysym::Delete, Modifiers::default()));
+        assert!(Binding::parse("Del")
+            .unwrap()
+            .matches(Keysym::Delete, Modifiers::default()));
+        assert!(Binding::parse("Ctrl+Delete").unwrap().matches(
+            Keysym::Delete,
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            }
+        ));
+        assert!(Binding::parse("Ctrl+BackSpace").unwrap().matches(
+            Keysym::BackSpace,
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            }
+        ));
+        assert!(Binding::parse("Ctrl+Left").unwrap().matches(
+            Keysym::Left,
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            }
+        ));
+        assert!(Binding::parse("Ctrl+Right").unwrap().matches(
+            Keysym::Right,
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            }
+        ));
     }
 }

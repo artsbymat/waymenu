@@ -266,6 +266,26 @@ impl State {
             self.execute_selection();
         } else if self.bindings.backspace.matches(key, modifiers) {
             self.model.backspace();
+        } else if self.bindings.delete_forward.matches(key, modifiers) {
+            self.model.delete_forward();
+        } else if self.bindings.delete_word.matches(key, modifiers)
+            || self.bindings.delete_word_back.matches(key, modifiers)
+        {
+            self.model.delete_word();
+        } else if self.bindings.delete_word_forward.matches(key, modifiers) {
+            self.model.delete_word_forward();
+        } else if self.bindings.word_left.matches(key, modifiers) {
+            self.model.move_word_left();
+        } else if self.bindings.word_right.matches(key, modifiers) {
+            self.model.move_word_right();
+        } else if self.bindings.left_arrow.matches(key, modifiers)
+            || (key == Keysym::Left && !modifiers.ctrl && !modifiers.alt && !modifiers.logo)
+        {
+            self.model.move_left();
+        } else if self.bindings.right_arrow.matches(key, modifiers)
+            || (key == Keysym::Right && !modifiers.ctrl && !modifiers.alt && !modifiers.logo)
+        {
+            self.model.move_right();
         } else if self.bindings.next.matches(key, modifiers)
             || self.bindings.next_arrow.matches(key, modifiers)
         {
@@ -278,16 +298,10 @@ impl State {
             self.model.autocomplete();
         } else if self.bindings.clear.matches(key, modifiers) {
             self.model.clear();
-        } else if self.bindings.delete_word.matches(key, modifiers) {
-            self.model.delete_word();
         } else if self.bindings.beginning.matches(key, modifiers) {
             self.model.move_to_beginning();
         } else if self.bindings.end.matches(key, modifiers) {
             self.model.move_to_end();
-        } else if key == Keysym::Left && !modifiers.ctrl && !modifiers.alt && !modifiers.logo {
-            self.model.move_left();
-        } else if key == Keysym::Right && !modifiers.ctrl && !modifiers.alt && !modifiers.logo {
-            self.model.move_right();
         } else if !modifiers.ctrl && !modifiers.alt && !modifiers.logo {
             if let Some(text) = event
                 .utf8
@@ -658,8 +672,15 @@ struct RuntimeBindings {
     clear: Binding,
     next_arrow: Binding,
     previous_arrow: Binding,
+    left_arrow: Binding,
+    right_arrow: Binding,
     backspace: Binding,
     delete_word: Binding,
+    delete_word_back: Binding,
+    delete_forward: Binding,
+    delete_word_forward: Binding,
+    word_left: Binding,
+    word_right: Binding,
     beginning: Binding,
     end: Binding,
     help: Binding,
@@ -680,8 +701,15 @@ impl RuntimeBindings {
             clear: parse(&value.clear)?,
             next_arrow: parse(&value.next_arrow)?,
             previous_arrow: parse(&value.previous_arrow)?,
+            left_arrow: parse(&value.left_arrow)?,
+            right_arrow: parse(&value.right_arrow)?,
             backspace: parse(&value.backspace)?,
             delete_word: parse(&value.delete_word)?,
+            delete_word_back: parse(&value.delete_word_back)?,
+            delete_forward: parse(&value.delete_forward)?,
+            delete_word_forward: parse(&value.delete_word_forward)?,
+            word_left: parse(&value.word_left)?,
+            word_right: parse(&value.word_right)?,
             beginning: parse(&value.beginning)?,
             end: parse(&value.end)?,
             help: parse(&value.help)?,
@@ -782,5 +810,38 @@ mod tests {
         };
         assert_eq!(calculate_axis_scroll(&mut acc, ev_neg), -1);
         assert_eq!(acc, -1.0);
+    }
+
+    #[test]
+    fn runtime_bindings_support_text_editor_shortcuts() {
+        use smithay_client_toolkit::seat::keyboard::{Keysym, Modifiers};
+        let config = crate::config::Config::default();
+        let bindings = super::RuntimeBindings::new(&config.keybindings).unwrap();
+
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let none = Modifiers::default();
+
+        // Ctrl + Left / Right
+        assert!(bindings.word_left.matches(Keysym::Left, ctrl));
+        assert!(bindings.word_right.matches(Keysym::Right, ctrl));
+        assert!(!bindings.word_left.matches(Keysym::Left, none));
+        assert!(!bindings.word_right.matches(Keysym::Right, none));
+
+        // Delete / Ctrl+Delete
+        assert!(bindings.delete_forward.matches(Keysym::Delete, none));
+        assert!(bindings.delete_word_forward.matches(Keysym::Delete, ctrl));
+        assert!(!bindings.delete_forward.matches(Keysym::Delete, ctrl));
+        assert!(!bindings.delete_word_forward.matches(Keysym::Delete, none));
+
+        // Backspace / Ctrl+Backspace
+        assert!(bindings.backspace.matches(Keysym::BackSpace, none));
+        assert!(bindings.delete_word_back.matches(Keysym::BackSpace, ctrl));
+        assert!(!bindings.backspace.matches(Keysym::BackSpace, ctrl));
+
+        // Ctrl + W
+        assert!(bindings.delete_word.matches(Keysym::w, ctrl));
     }
 }

@@ -250,14 +250,39 @@ impl UiModel {
         }
     }
 
-    pub fn delete_word(&mut self) {
-        while self.cursor > 0 && self.input[..self.cursor].ends_with(char::is_whitespace) {
-            self.backspace();
-        }
-        while self.cursor > 0 && !self.input[..self.cursor].ends_with(char::is_whitespace) {
-            self.backspace();
+    pub fn delete_word_backward(&mut self) {
+        let target = self.word_left_index();
+        if target < self.cursor {
+            self.input.drain(target..self.cursor);
+            self.cursor = target;
+            self.refresh();
         }
     }
+
+    pub fn delete_word(&mut self) {
+        self.delete_word_backward();
+    }
+
+    pub fn delete_forward(&mut self) {
+        if self.cursor < self.input.len() {
+            let next = self.input[self.cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(index, _)| self.cursor + index)
+                .unwrap_or(self.input.len());
+            self.input.drain(self.cursor..next);
+            self.refresh();
+        }
+    }
+
+    pub fn delete_word_forward(&mut self) {
+        let target = self.word_right_index();
+        if target > self.cursor {
+            self.input.drain(self.cursor..target);
+            self.refresh();
+        }
+    }
+
     pub fn move_to_beginning(&mut self) {
         self.cursor = 0;
     }
@@ -286,6 +311,79 @@ impl UiModel {
                 .unwrap_or(self.input.len());
             self.cursor = next;
         }
+    }
+    pub fn move_word_left(&mut self) {
+        self.cursor = self.word_left_index();
+    }
+    pub fn move_word_right(&mut self) {
+        self.cursor = self.word_right_index();
+    }
+
+    fn word_left_index(&self) -> usize {
+        if self.cursor == 0 {
+            return 0;
+        }
+        let prefix = &self.input[..self.cursor];
+        let mut chars = prefix.char_indices().rev().peekable();
+
+        while let Some(&(_, c)) = chars.peek() {
+            if char_category(c) == CharCategory::Whitespace {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        let Some(&(_, first_char)) = chars.peek() else {
+            return 0;
+        };
+        let target_category = char_category(first_char);
+
+        let mut last_index = 0;
+        while let Some(&(index, c)) = chars.peek() {
+            if char_category(c) == target_category {
+                last_index = index;
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        last_index
+    }
+
+    fn word_right_index(&self) -> usize {
+        if self.cursor >= self.input.len() {
+            return self.input.len();
+        }
+        let suffix = &self.input[self.cursor..];
+        let mut chars = suffix.char_indices().peekable();
+
+        while let Some(&(_, c)) = chars.peek() {
+            if char_category(c) == CharCategory::Whitespace {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        let Some(&(_, first_char)) = chars.peek() else {
+            return self.input.len();
+        };
+        let target_category = char_category(first_char);
+
+        while let Some(&(_, c)) = chars.peek() {
+            if char_category(c) == target_category {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        chars
+            .peek()
+            .map(|&(index, _)| self.cursor + index)
+            .unwrap_or(self.input.len())
     }
     pub fn cursor_prefix(&self) -> std::borrow::Cow<'_, str> {
         if self.help_mode {
@@ -629,6 +727,41 @@ impl UiModel {
                     keybindings.delete_word.as_str(),
                 ),
                 (
+                    "delete-word-back",
+                    "Delete previous word",
+                    keybindings.delete_word_back.as_str(),
+                ),
+                (
+                    "delete-forward",
+                    "Delete next character",
+                    keybindings.delete_forward.as_str(),
+                ),
+                (
+                    "delete-word-forward",
+                    "Delete next word",
+                    keybindings.delete_word_forward.as_str(),
+                ),
+                (
+                    "word-left",
+                    "Move cursor word left",
+                    keybindings.word_left.as_str(),
+                ),
+                (
+                    "word-right",
+                    "Move cursor word right",
+                    keybindings.word_right.as_str(),
+                ),
+                (
+                    "left-arrow",
+                    "Move cursor left",
+                    keybindings.left_arrow.as_str(),
+                ),
+                (
+                    "right-arrow",
+                    "Move cursor right",
+                    keybindings.right_arrow.as_str(),
+                ),
+                (
                     "beginning",
                     "Move cursor to beginning",
                     keybindings.beginning.as_str(),
@@ -658,6 +791,23 @@ fn help_row(id: &str, title: &str, description: &str) -> SearchResult {
         icon: None,
         image: None,
         metadata: Some("help".into()),
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum CharCategory {
+    Whitespace,
+    Word,
+    Punctuation,
+}
+
+fn char_category(c: char) -> CharCategory {
+    if c.is_whitespace() {
+        CharCategory::Whitespace
+    } else if c.is_alphanumeric() || c == '_' {
+        CharCategory::Word
+    } else {
+        CharCategory::Punctuation
     }
 }
 
@@ -2357,5 +2507,113 @@ mod tests {
         renderer.draw(&mut canvas, 640, 400, &model);
         // Canvas has non-zero pixel data
         assert!(canvas.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn text_editor_word_navigation_and_deletions() {
+        let mut model = UiModel::new(Config::default());
+
+        // 1. Word navigation with spaces and punctuation
+        model.insert("cargo run --release");
+        assert_eq!(model.input, "cargo run --release");
+        assert_eq!(model.cursor(), 19);
+
+        // Word left navigation
+        model.move_word_left();
+        assert_eq!(model.cursor(), 12); // before "release"
+        assert_eq!(&model.input[..model.cursor()], "cargo run --");
+
+        model.move_word_left();
+        assert_eq!(model.cursor(), 10); // before "--"
+        assert_eq!(&model.input[..model.cursor()], "cargo run ");
+
+        model.move_word_left();
+        assert_eq!(model.cursor(), 6); // before "run"
+        assert_eq!(&model.input[..model.cursor()], "cargo ");
+
+        model.move_word_left();
+        assert_eq!(model.cursor(), 0); // before "cargo"
+        assert_eq!(&model.input[..model.cursor()], "");
+
+        // Moving left when at start stays at 0
+        model.move_word_left();
+        assert_eq!(model.cursor(), 0);
+
+        // Word right navigation
+        model.move_word_right();
+        assert_eq!(model.cursor(), 5); // after "cargo"
+
+        model.move_word_right();
+        assert_eq!(model.cursor(), 9); // after "run"
+
+        model.move_word_right();
+        assert_eq!(model.cursor(), 12); // after "--"
+
+        model.move_word_right();
+        assert_eq!(model.cursor(), 19); // after "release"
+
+        // Moving right when at end stays at end
+        model.move_word_right();
+        assert_eq!(model.cursor(), 19);
+
+        // 2. Delete word backward (Ctrl+Backspace / Ctrl+W)
+        model.delete_word_backward();
+        assert_eq!(model.input, "cargo run --");
+        assert_eq!(model.cursor(), 12);
+
+        model.delete_word_backward();
+        assert_eq!(model.input, "cargo run ");
+        assert_eq!(model.cursor(), 10);
+
+        model.delete_word();
+        assert_eq!(model.input, "cargo ");
+        assert_eq!(model.cursor(), 6);
+
+        model.delete_word_backward();
+        assert_eq!(model.input, "");
+        assert_eq!(model.cursor(), 0);
+
+        model.delete_word_backward();
+        assert_eq!(model.input, "");
+        assert_eq!(model.cursor(), 0);
+
+        // 3. Delete forward (Del / Delete) and delete word forward (Ctrl+Delete)
+        model.insert("apple banana cherry");
+        model.move_to_beginning();
+        assert_eq!(model.cursor(), 0);
+
+        // Delete single character forward
+        model.delete_forward();
+        assert_eq!(model.input, "pple banana cherry");
+        assert_eq!(model.cursor(), 0);
+
+        // Delete word forward
+        model.delete_word_forward();
+        assert_eq!(model.input, " banana cherry");
+        assert_eq!(model.cursor(), 0);
+
+        // Delete word forward including leading space
+        model.delete_word_forward();
+        assert_eq!(model.input, " cherry");
+        assert_eq!(model.cursor(), 0);
+
+        model.delete_word_forward();
+        assert_eq!(model.input, "");
+        assert_eq!(model.cursor(), 0);
+
+        // 4. Unicode / multibyte support
+        model.insert("halo dunia 🌍");
+        assert_eq!(model.cursor(), 15);
+        model.move_word_left();
+        assert_eq!(model.cursor(), 11); // before emoji (4 bytes)
+        model.delete_forward();
+        assert_eq!(model.input, "halo dunia ");
+        assert_eq!(model.cursor(), 11);
+        model.delete_word_backward();
+        assert_eq!(model.input, "halo ");
+        assert_eq!(model.cursor(), 5);
+        model.delete_word_backward();
+        assert_eq!(model.input, "");
+        assert_eq!(model.cursor(), 0);
     }
 }
