@@ -84,6 +84,8 @@ impl DesktopApplication {
 pub fn discover() -> Vec<DesktopApplication> {
     let mut result = Vec::new();
     let mut ids = HashSet::new();
+    let locale = current_locale();
+    let desktops = current_desktops();
     for directory in application_dirs() {
         visit_desktop_files(&directory, &mut |path| {
             let id = path
@@ -97,7 +99,7 @@ pub fn discover() -> Vec<DesktopApplication> {
             }
             ids.insert(id.clone());
             if let Ok(text) = fs::read_to_string(path) {
-                if let Some(app) = parse_desktop(&id, path, &text) {
+                if let Some(app) = parse_desktop_with_env(&id, path, &text, &locale, &desktops) {
                     result.push(app);
                 }
             }
@@ -138,8 +140,9 @@ fn visit_desktop_files(dir: &Path, visit: &mut impl FnMut(&Path)) {
         return;
     };
     for entry in entries.flatten() {
+        let is_dir = entry.file_type().is_ok_and(|ft| ft.is_dir());
         let path = entry.path();
-        if path.is_dir() {
+        if is_dir {
             visit_desktop_files(&path, visit);
         } else if path.extension() == Some(OsStr::new("desktop")) {
             visit(&path);
@@ -147,7 +150,20 @@ fn visit_desktop_files(dir: &Path, visit: &mut impl FnMut(&Path)) {
     }
 }
 
+#[cfg(test)]
 fn parse_desktop(id: &str, path: &Path, input: &str) -> Option<DesktopApplication> {
+    let locale = current_locale();
+    let desktops = current_desktops();
+    parse_desktop_with_env(id, path, input, &locale, &desktops)
+}
+
+fn parse_desktop_with_env(
+    id: &str,
+    path: &Path,
+    input: &str,
+    locale: &str,
+    desktops: &[String],
+) -> Option<DesktopApplication> {
     let mut in_entry = false;
     let mut name = None;
     let mut description = String::new();
@@ -161,7 +177,6 @@ fn parse_desktop(id: &str, path: &Path, input: &str) -> Option<DesktopApplicatio
     let mut generic_name = None;
     let mut keywords = String::new();
     let mut categories = String::new();
-    let locale = current_locale();
     let mut localized_name = None;
     let mut localized_description = None;
     for raw in input.lines() {
@@ -184,8 +199,8 @@ fn parse_desktop(id: &str, path: &Path, input: &str) -> Option<DesktopApplicatio
             "GenericName" => generic_name = Some(unescape_desktop_value(value)?),
             "Keywords" => keywords = unescape_desktop_value(value)?.replace(';', " "),
             "Categories" => categories = unescape_desktop_value(value)?.replace(';', " "),
-            key if localized_key_priority(key, "Name", &locale).is_some() => {
-                let priority = localized_key_priority(key, "Name", &locale)?;
+            key if localized_key_priority(key, "Name", locale).is_some() => {
+                let priority = localized_key_priority(key, "Name", locale)?;
                 if localized_name
                     .as_ref()
                     .is_none_or(|(current, _)| priority > *current)
@@ -193,8 +208,8 @@ fn parse_desktop(id: &str, path: &Path, input: &str) -> Option<DesktopApplicatio
                     localized_name = Some((priority, unescape_desktop_value(value)?));
                 }
             }
-            key if localized_key_priority(key, "Comment", &locale).is_some() => {
-                let priority = localized_key_priority(key, "Comment", &locale)?;
+            key if localized_key_priority(key, "Comment", locale).is_some() => {
+                let priority = localized_key_priority(key, "Comment", locale)?;
                 if localized_description
                     .as_ref()
                     .is_none_or(|(current, _)| priority > *current)
@@ -212,13 +227,12 @@ fn parse_desktop(id: &str, path: &Path, input: &str) -> Option<DesktopApplicatio
             _ => {}
         }
     }
-    let desktops = current_desktops();
     if only_show_in
         .as_deref()
-        .is_some_and(|list| !desktop_list_matches(list, &desktops))
+        .is_some_and(|list| !desktop_list_matches(list, desktops))
         || not_show_in
             .as_deref()
-            .is_some_and(|list| desktop_list_matches(list, &desktops))
+            .is_some_and(|list| desktop_list_matches(list, desktops))
         || try_exec
             .as_deref()
             .is_some_and(|program| !executable_exists(program))
@@ -347,6 +361,9 @@ fn localized_key_priority(key: &str, base: &str, locale: &str) -> Option<u8> {
 }
 
 fn unescape_desktop_value(value: &str) -> Option<String> {
+    if !value.contains('\\') {
+        return Some(value.to_owned());
+    }
     let mut output = String::with_capacity(value.len());
     let mut chars = value.chars();
     while let Some(ch) = chars.next() {

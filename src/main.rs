@@ -136,30 +136,38 @@ fn dispatch(query: &str, config: &Config) -> Result<(), Box<dyn std::error::Erro
                 result.description.clear();
             }
         }
-        print_results(matches);
+        print_results(&matches);
         return Ok(());
     }
     let plugin_manager = waymenu::plugins::PluginManager::from_config(config);
     if let Some((plugin, plugin_query)) = plugin_manager.select(query) {
-        print_results(plugin.search(plugin_query));
+        let results = plugin.search(plugin_query);
+        print_results(&results);
         return Ok(());
     }
     let mut history = History::load_with_limit(config.history.max_entries);
     let applications = applications::discover();
+    let use_history = config.general.remember_history && config.history.enabled;
+    let now = if use_history {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    } else {
+        0
+    };
     let results: Vec<_> = applications
         .iter()
         .map(|app| {
-            app.as_result(
-                if config.general.remember_history && config.history.enabled {
-                    history.score(&app.id)
-                } else {
-                    0
-                },
-            )
+            app.as_result(if use_history {
+                history.score_with_now(&app.id, now)
+            } else {
+                0
+            })
         })
         .collect();
     let matches = search::filter(&results, query, config.general.max_results);
-    print_results(matches.clone());
+    print_results(&matches);
     // Headless engine mode launches only when explicitly selecting an exact result.
     if let Some(id) = env::var_os("WAYMENU_EXECUTE_ID") {
         if let Some(app) = applications
@@ -200,7 +208,7 @@ fn copy_to_clipboard(text: &str) -> io::Result<()> {
     }
 }
 
-fn print_results(results: Vec<SearchResult>) {
+fn print_results(results: &[SearchResult]) {
     for result in results {
         println!("{}\t{}\t{}", result.id, result.title, result.description);
     }

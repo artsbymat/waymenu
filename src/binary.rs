@@ -25,6 +25,16 @@ pub fn discover() -> Vec<Binary> {
             continue;
         };
         for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else {
+                continue;
+            };
+            if seen.contains(name) {
+                continue;
+            }
+            if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                continue;
+            }
             let path = entry.path();
             let Ok(metadata) = fs::metadata(&path) else {
                 continue;
@@ -32,9 +42,6 @@ pub fn discover() -> Vec<Binary> {
             if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
                 continue;
             }
-            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-                continue;
-            };
             if seen.insert(name.to_owned()) {
                 binaries.push(Binary {
                     name: name.to_owned(),

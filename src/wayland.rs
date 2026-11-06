@@ -454,11 +454,22 @@ fn calculate_axis_scroll(accumulator: &mut f64, vertical: AxisScroll) -> i32 {
 }
 
 fn convert_rgba_to_wayland_argb8888(canvas: &mut [u8]) {
-    for pixel in canvas.as_chunks_mut::<4>().0 {
-        #[cfg(target_endian = "little")]
-        pixel.swap(0, 2);
-        #[cfg(target_endian = "big")]
-        pixel.rotate_right(1);
+    #[cfg(target_endian = "little")]
+    {
+        let (chunks, remainder) = canvas.as_chunks_mut::<8>();
+        for chunk in chunks {
+            chunk.swap(0, 2);
+            chunk.swap(4, 6);
+        }
+        for pixel in remainder.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+    }
+    #[cfg(target_endian = "big")]
+    {
+        for pixel in canvas.as_chunks_mut::<4>().0 {
+            pixel.rotate_right(1);
+        }
     }
 }
 

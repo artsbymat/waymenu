@@ -3,6 +3,24 @@
 Measurements are made from an optimized build. They are evidence for a specific machine,
 not universal guarantees.
 
+## 2026-11-06
+
+- Host: Linux 7.2.11-arch1-1, x86_64
+- Compiler: rustc 1.99.1
+- Dmenu with 100,000 input rows: **9,312 KiB peak RSS** (reduced from 29,544 KiB, a **68.5% reduction** in memory usage) by eliminating redundant `SearchResult` wrappers and storing lightweight strings until visible viewport slicing.
+- Headless application discovery query peak RSS: **5,300 KiB peak RSS**.
+- Plugin query peak RSS: **6,600 KiB peak RSS**.
+- Optimizations introduced:
+  - Specialized ASCII fast path in fuzzy matching algorithm with $O(1)$ character count and vector-friendly byte scans.
+  - Linear-time $O(N)$ partitioning via `select_nth_unstable_by` prior to sorting top results in `filter` and `filter_strings`.
+  - Zero-allocation case-insensitive substring and ordered matching in dmenu mode.
+  - Hoisted environment variable reads (`locale`, `current_desktops`) outside desktop entry file traversal.
+  - Switched from `path.is_dir()` stat calls to `DirEntry::file_type()` in desktop discovery and binary scans.
+  - Eliminated `fc-match` subprocess spawning on startup by checking standard font file candidate paths first.
+  - OnceLock caching for GTK icon theme configuration and in-process caching for parsed `index.theme` directories.
+  - Direct premultiplied integer color blending and transparent pixel early rejection during rendering.
+  - Unrolled 8-byte (2-pixel) buffer swizzling for Wayland shared memory buffers.
+
 ## 2026-11-03
 
 - Host: Linux 7.2.11-arch1-1, x86_64

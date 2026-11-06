@@ -52,6 +52,10 @@ impl History {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        self.score_with_now(id, now)
+    }
+
+    pub fn score_with_now(&self, id: &str, now: u64) -> i64 {
         self.data
             .entries
             .get(id)

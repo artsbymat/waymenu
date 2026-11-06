@@ -39,7 +39,7 @@ pub struct UiModel {
 }
 
 struct DmenuState {
-    items: Vec<SearchResult>,
+    items: Vec<String>,
     print_query: bool,
     fuzzy: bool,
     case_sensitive: bool,
@@ -60,16 +60,23 @@ impl UiModel {
         history: &History,
         config: &Config,
     ) -> Vec<SearchResult> {
+        let use_history = config.general.remember_history && config.history.enabled;
+        let now = if use_history {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        } else {
+            0
+        };
         applications
             .iter()
             .map(|app| {
-                app.as_result(
-                    if config.general.remember_history && config.history.enabled {
-                        history.score(&app.id)
-                    } else {
-                        0
-                    },
-                )
+                app.as_result(if use_history {
+                    history.score_with_now(&app.id, now)
+                } else {
+                    0
+                })
             })
             .collect()
     }
@@ -113,19 +120,6 @@ impl UiModel {
             password,
         } = options;
         let cursor = initial_query.len();
-        let entries = items
-            .into_iter()
-            .enumerate()
-            .map(|(index, title)| SearchResult {
-                id: index.to_string(),
-                title,
-                description: String::new(),
-                score: 0,
-                icon: None,
-                image: None,
-                metadata: None,
-            })
-            .collect();
         let mut model = Self {
             input: initial_query,
             results: Vec::new(),
@@ -144,7 +138,7 @@ impl UiModel {
             history,
             plugins: None,
             dmenu: Some(DmenuState {
-                items: entries,
+                items,
                 print_query,
                 fuzzy,
                 case_sensitive,
@@ -595,9 +589,23 @@ impl UiModel {
         let max_search_limit = (self.config.general.max_results * 15).max(200);
         if let Some(dmenu) = &self.dmenu {
             if self.input.is_empty() {
-                self.results = dmenu.items.iter().take(max_search_limit).cloned().collect();
+                self.results = dmenu
+                    .items
+                    .iter()
+                    .take(max_search_limit)
+                    .enumerate()
+                    .map(|(index, title)| SearchResult {
+                        id: index.to_string(),
+                        title: title.clone(),
+                        description: String::new(),
+                        score: 0,
+                        icon: None,
+                        image: None,
+                        metadata: None,
+                    })
+                    .collect();
             } else if dmenu.fuzzy && !dmenu.case_sensitive {
-                self.results = search::filter(&dmenu.items, &self.input, max_search_limit);
+                self.results = search::filter_strings(&dmenu.items, &self.input, max_search_limit);
             } else {
                 let query = if dmenu.case_sensitive {
                     self.input.clone()
@@ -607,20 +615,32 @@ impl UiModel {
                 self.results = dmenu
                     .items
                     .iter()
-                    .filter(|item| {
-                        let title = if dmenu.case_sensitive {
-                            item.title.clone()
+                    .enumerate()
+                    .filter(|(_, title)| {
+                        if dmenu.case_sensitive {
+                            if dmenu.fuzzy {
+                                ordered_match(title, &query)
+                            } else {
+                                title.contains(&query)
+                            }
                         } else {
-                            item.title.to_lowercase()
-                        };
-                        if dmenu.fuzzy {
-                            ordered_match(&title, &query)
-                        } else {
-                            title.contains(&query)
+                            if dmenu.fuzzy {
+                                ordered_match_ignore_case(title, &query)
+                            } else {
+                                contains_ignore_case(title, &query)
+                            }
                         }
                     })
                     .take(max_search_limit)
-                    .cloned()
+                    .map(|(index, title)| SearchResult {
+                        id: index.to_string(),
+                        title: title.clone(),
+                        description: String::new(),
+                        score: 0,
+                        icon: None,
+                        image: None,
+                        metadata: None,
+                    })
                     .collect();
             }
             return;
@@ -1270,6 +1290,10 @@ impl Renderer {
         for row in 0..icon.height {
             for column in 0..icon.width {
                 let offset = ((row * icon.width + column) * 4) as usize;
+                let alpha = icon.pixels[offset + 3];
+                if alpha == 0 {
+                    continue;
+                }
                 blend(
                     pixmap,
                     x + offset_x + column as i32,
@@ -1278,7 +1302,7 @@ impl Renderer {
                         icon.pixels[offset],
                         icon.pixels[offset + 1],
                         icon.pixels[offset + 2],
-                        icon.pixels[offset + 3],
+                        alpha,
                     ],
                     1.0,
                 );
@@ -1505,6 +1529,37 @@ fn ordered_match(candidate: &str, query: &str) -> bool {
         .all(|needle| candidate.any(|value| value == needle))
 }
 
+fn ordered_match_ignore_case(candidate: &str, query_lower: &str) -> bool {
+    if candidate.is_ascii() && query_lower.is_ascii() {
+        let mut cand_bytes = candidate.as_bytes().iter();
+        return query_lower
+            .as_bytes()
+            .iter()
+            .all(|&needle| cand_bytes.any(|b| b.to_ascii_lowercase() == needle));
+    }
+    let mut candidate = candidate.chars().flat_map(char::to_lowercase);
+    query_lower
+        .chars()
+        .all(|needle| candidate.any(|value| value == needle))
+}
+
+fn contains_ignore_case(candidate: &str, query_lower: &str) -> bool {
+    if candidate.is_ascii() && query_lower.is_ascii() {
+        let q_bytes = query_lower.as_bytes();
+        if q_bytes.is_empty() {
+            return true;
+        }
+        if candidate.len() < q_bytes.len() {
+            return false;
+        }
+        return candidate
+            .as_bytes()
+            .windows(q_bytes.len())
+            .any(|w| w.eq_ignore_ascii_case(q_bytes));
+    }
+    candidate.to_lowercase().contains(query_lower)
+}
+
 fn result_window_start(
     current_first: usize,
     selected: usize,
@@ -1530,6 +1585,31 @@ fn load_font(family: &str) -> Option<FontArc> {
     } else {
         family
     };
+    let mono = family.to_ascii_lowercase().contains("mono");
+    let candidates: &[&str] = if mono {
+        &[
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+        ]
+    } else {
+        &[
+            "/usr/share/fonts/inter/Inter.ttc",
+            "/usr/share/fonts/inter/Inter-Regular.otf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf",
+        ]
+    };
+    if family.eq_ignore_ascii_case("Inter") || family.eq_ignore_ascii_case("sans-serif") || mono {
+        if let Some(font) = candidates
+            .iter()
+            .find_map(|path| read_font(Path::new(path)))
+        {
+            return Some(font);
+        }
+    }
     let matched = std::process::Command::new("fc-match")
         .args([
             "-f",
@@ -1544,22 +1624,6 @@ fn load_font(family: &str) -> Option<FontArc> {
     if let Some(font) = matched.as_deref().and_then(read_font) {
         return Some(font);
     }
-    let mono = family.to_ascii_lowercase().contains("mono");
-    let candidates: &[&str] = if mono {
-        &[
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-            "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-        ]
-    } else {
-        &[
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/inter/Inter.ttc",
-            "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf",
-        ]
-    };
     candidates
         .iter()
         .find_map(|path| read_font(Path::new(path)))
@@ -1751,6 +1815,13 @@ fn resolve_icon_uncached(name: &str) -> Option<PathBuf> {
 }
 
 fn preferred_icon_theme() -> Option<String> {
+    static THEME_CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    THEME_CACHE
+        .get_or_init(preferred_icon_theme_uncached)
+        .clone()
+}
+
+fn preferred_icon_theme_uncached() -> Option<String> {
     let config_home = env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
@@ -1796,6 +1867,65 @@ fn icon_filenames(name: &str) -> Vec<String> {
     }
 }
 
+#[derive(Clone, Default)]
+struct ThemeIndexData {
+    directories: Vec<String>,
+    inherits: Vec<String>,
+}
+
+fn read_theme_index(theme_dir: &Path) -> Option<ThemeIndexData> {
+    static THEME_INDEX_CACHE: std::sync::OnceLock<
+        std::sync::RwLock<HashMap<PathBuf, Option<ThemeIndexData>>>,
+    > = std::sync::OnceLock::new();
+    let cache = THEME_INDEX_CACHE.get_or_init(|| std::sync::RwLock::new(HashMap::new()));
+    if let Ok(guard) = cache.read() {
+        if let Some(entry) = guard.get(theme_dir) {
+            return entry.clone();
+        }
+    }
+    let data = fs::read_to_string(theme_dir.join("index.theme"))
+        .ok()
+        .map(|index| {
+            let mut directories = Vec::new();
+            let mut inherits = Vec::new();
+            for line in index.lines().map(str::trim) {
+                if let Some(value) = line.strip_prefix("Directories=") {
+                    directories.extend(
+                        value
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|part| !part.is_empty())
+                            .map(str::to_owned),
+                    );
+                } else if let Some(value) = line.strip_prefix("ScaledDirectories=") {
+                    directories.extend(
+                        value
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|part| !part.is_empty())
+                            .map(str::to_owned),
+                    );
+                } else if let Some(value) = line.strip_prefix("Inherits=") {
+                    inherits.extend(
+                        value
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|part| !part.is_empty())
+                            .map(str::to_owned),
+                    );
+                }
+            }
+            ThemeIndexData {
+                directories,
+                inherits,
+            }
+        });
+    if let Ok(mut guard) = cache.write() {
+        guard.insert(theme_dir.to_path_buf(), data.clone());
+    }
+    data
+}
+
 fn find_icon_in_theme(
     icons_root: &Path,
     theme: &str,
@@ -1806,7 +1936,7 @@ fn find_icon_in_theme(
         return None;
     }
     let theme_dir = icons_root.join(theme);
-    let Ok(index) = fs::read_to_string(theme_dir.join("index.theme")) else {
+    let Some(index) = read_theme_index(&theme_dir) else {
         // Some user-installed hicolor directories only contain app assets and omit
         // index.theme. Search the standard app-icon buckets before giving up.
         for directory in [
@@ -1830,45 +1960,16 @@ fn find_icon_in_theme(
         }
         return None;
     };
-    let mut directories = Vec::new();
-    let mut inherits = Vec::new();
-    for line in index.lines().map(str::trim) {
-        if let Some(value) = line.strip_prefix("Directories=") {
-            directories.extend(
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|part| !part.is_empty())
-                    .map(str::to_owned),
-            );
-        } else if let Some(value) = line.strip_prefix("ScaledDirectories=") {
-            directories.extend(
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|part| !part.is_empty())
-                    .map(str::to_owned),
-            );
-        } else if let Some(value) = line.strip_prefix("Inherits=") {
-            inherits.extend(
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|part| !part.is_empty())
-                    .map(str::to_owned),
-            );
-        }
-    }
-    for directory in directories {
+    for directory in &index.directories {
         for filename in filenames {
-            let candidate = theme_dir.join(&directory).join(filename);
+            let candidate = theme_dir.join(directory).join(filename);
             if candidate.is_file() {
                 return Some(candidate);
             }
         }
     }
-    for inherited in inherits {
-        if let Some(path) = find_icon_in_theme(icons_root, &inherited, filenames, visited) {
+    for inherited in &index.inherits {
+        if let Some(path) = find_icon_in_theme(icons_root, inherited, filenames, visited) {
             return Some(path);
         }
     }
@@ -2011,20 +2112,28 @@ fn stroke_round_rect(
 }
 
 fn blend(pixmap: &mut PixmapMut<'_>, x: i32, y: i32, color: [u8; 4], coverage: f32) {
+    if coverage <= 0.001 || color[3] == 0 {
+        return;
+    }
     if x < 0 || y < 0 || x >= pixmap.width() as i32 || y >= pixmap.height() as i32 {
+        return;
+    }
+    let alpha = (coverage * color[3] as f32).round() as u32;
+    if alpha == 0 {
         return;
     }
     let index = y as usize * pixmap.width() as usize + x as usize;
     let pixel = &mut pixmap.pixels_mut()[index];
-    let alpha = coverage * color[3] as f32 / 255.0;
-    let old = pixel.demultiply();
-    *pixel = tiny_skia::PremultipliedColorU8::from_rgba(
-        (color[0] as f32 * alpha + old.red() as f32 * (1.0 - alpha)) as u8,
-        (color[1] as f32 * alpha + old.green() as f32 * (1.0 - alpha)) as u8,
-        (color[2] as f32 * alpha + old.blue() as f32 * (1.0 - alpha)) as u8,
-        255,
-    )
-    .unwrap();
+    if alpha >= 255 {
+        *pixel =
+            tiny_skia::PremultipliedColorU8::from_rgba(color[0], color[1], color[2], 255).unwrap();
+        return;
+    }
+    let inv_alpha = 255 - alpha;
+    let r = ((color[0] as u32 * alpha + pixel.red() as u32 * inv_alpha + 127) / 255) as u8;
+    let g = ((color[1] as u32 * alpha + pixel.green() as u32 * inv_alpha + 127) / 255) as u8;
+    let b = ((color[2] as u32 * alpha + pixel.blue() as u32 * inv_alpha + 127) / 255) as u8;
+    *pixel = tiny_skia::PremultipliedColorU8::from_rgba(r, g, b, 255).unwrap();
 }
 
 #[cfg(test)]
