@@ -1,0 +1,15 @@
+[package]
+name = "waymenu-braveorigin-history-plugin"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "braveorigin_history"
+crate-type = ["cdylib"]
+
+[dependencies]
+rusqlite = { version = "0.38", default-features = false, features = ["functions"] }
+tempfile = "3.27"
+waymenu-plugin-api = { path = "../../plugin-api" }

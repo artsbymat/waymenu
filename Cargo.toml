@@ -14,6 +14,8 @@ exclude = [
     "plugins/clipboard",
     "plugins/kill",
     "plugins/pacman",
+    "plugins/chrome-history",
+    "plugins/braveorigin-history",
 ]
 resolver = "2"
 

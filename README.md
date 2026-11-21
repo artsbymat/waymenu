@@ -13,8 +13,17 @@ Download the Linux x86-64 archive from [GitHub Releases](https://github.com/arts
 install -Dm755 waymenu "$HOME/.local/bin/waymenu"
 plugin_dir="${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins"
 mkdir -p "$plugin_dir"
-install -m755 plugins/*.so "$plugin_dir/"
+for plugin in plugins/*.so; do
+  case "$plugin" in
+    plugins/libchrome_history.so|plugins/libbraveorigin_history.so) continue ;;
+  esac
+  install -m755 "$plugin" "$plugin_dir/"
+done
 ```
+
+For browser history, install either `plugins/libchrome_history.so` or
+`plugins/libbraveorigin_history.so` into `$plugin_dir`. Both use the `h ` prefix.
+Keep only the selected history plugin in that directory.
 
 Add `~/.local/bin` to `PATH` if needed. The release build uses Ubuntu 24.04
 and requires `libxkbcommon` at runtime. Plugins can require external tools
@@ -52,6 +61,10 @@ plugin. Native plugins execute in the launcher process, so only install plugins 
 
 Use the [Web Search plugin](plugins/web-search/README.md) with the `s ` prefix to
 search websites or open bookmarks from your own TOML files.
+
+Choose [Chrome History](plugins/chrome-history/README.md) for Google Chrome Stable
+or [Brave Origin History](plugins/braveorigin-history/README.md) for Brave Origin. With either
+plugin, type `h ` to search across profiles and open a result in its source profile.
 
 The Rink calculator and unit-conversion plugin is built separately and uses the `=`
 prefix. It is not a dependency of the Waymenu executable:
