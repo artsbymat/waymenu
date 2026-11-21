@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     env, fs,
@@ -40,6 +41,7 @@ pub struct UiModel {
 
 struct DmenuState {
     items: Vec<String>,
+    prompt: String,
     print_query: bool,
     fuzzy: bool,
     case_sensitive: bool,
@@ -47,6 +49,7 @@ struct DmenuState {
 
 pub struct DmenuModelOptions {
     pub prompt: String,
+    pub placeholder: String,
     pub initial_query: String,
     pub print_query: bool,
     pub fuzzy: bool,
@@ -113,6 +116,7 @@ impl UiModel {
         let history = History::load_with_limit(0);
         let DmenuModelOptions {
             prompt,
+            placeholder,
             initial_query,
             print_query,
             fuzzy,
@@ -125,7 +129,7 @@ impl UiModel {
             results: Vec::new(),
             selected: 0,
             exit: false,
-            prompt,
+            prompt: placeholder,
             selection_moved_down: false,
             help_mode: false,
             password,
@@ -139,6 +143,7 @@ impl UiModel {
             plugins: None,
             dmenu: Some(DmenuState {
                 items,
+                prompt,
                 print_query,
                 fuzzy,
                 case_sensitive,
@@ -390,17 +395,17 @@ impl UiModel {
             .map(|&(index, _)| self.cursor + index)
             .unwrap_or(self.input.len())
     }
-    pub fn cursor_prefix(&self) -> std::borrow::Cow<'_, str> {
+    pub fn cursor_prefix(&self) -> Cow<'_, str> {
         if self.help_mode {
-            std::borrow::Cow::Borrowed("")
+            Cow::Borrowed("")
         } else if self.password {
             let count = self.input[..self.cursor.min(self.input.len())]
                 .chars()
                 .count();
-            std::borrow::Cow::Owned("•".repeat(count))
+            Cow::Owned("•".repeat(count))
         } else {
             let end = self.cursor.min(self.input.len());
-            std::borrow::Cow::Borrowed(&self.input[..end])
+            Cow::Borrowed(&self.input[..end])
         }
     }
 
@@ -420,15 +425,15 @@ impl UiModel {
         &self.config.keybindings.help
     }
 
-    fn displayed_input(&self) -> std::borrow::Cow<'_, str> {
+    fn displayed_input(&self) -> Cow<'_, str> {
         if self.help_mode {
-            std::borrow::Cow::Borrowed("Help · Keybindings and plugins")
+            Cow::Borrowed("Help · Keybindings and plugins")
         } else if self.input.is_empty() {
-            std::borrow::Cow::Borrowed(&self.prompt)
+            Cow::Borrowed(&self.prompt)
         } else if self.password {
-            std::borrow::Cow::Owned("•".repeat(self.input.chars().count()))
+            Cow::Owned("•".repeat(self.input.chars().count()))
         } else {
-            std::borrow::Cow::Borrowed(&self.input)
+            Cow::Borrowed(&self.input)
         }
     }
 
@@ -1048,6 +1053,28 @@ impl Renderer {
         32.0 + self.text_width(&prefix, self.font_size + 5.0)
     }
 
+    fn fit_text<'a>(&self, text: &'a str, size: f32, width: f32) -> Cow<'a, str> {
+        if self.text_width(text, size) <= width {
+            return Cow::Borrowed(text);
+        }
+
+        let available = width - self.text_width("…", size);
+        if available < 0.0 {
+            return Cow::Borrowed("");
+        }
+
+        let (mut start, mut end) = (0, text.len());
+        while start < end {
+            let mid = start + (end - start).div_ceil(2);
+            if self.text_width(&text[..text.floor_char_boundary(mid)], size) <= available {
+                start = mid;
+            } else {
+                end = mid - 1;
+            }
+        }
+        Cow::Owned(format!("{}…", &text[..text.floor_char_boundary(start)]))
+    }
+
     pub fn first_visible(&self) -> usize {
         self.first_visible
     }
@@ -1091,30 +1118,54 @@ impl Renderer {
             self.theme.background[2],
             self.theme.background[3],
         ));
+        let mut input_offset = 0.0;
+        if let Some(dmenu) = &model.dmenu {
+            let prompt = self.fit_text(dmenu.prompt.trim(), self.font_size, width as f32 / 3.0);
+            if !prompt.is_empty() {
+                input_offset = 20.0 + self.text_width(&prompt, self.font_size).ceil();
+                self.text(
+                    &mut pixmap,
+                    &prompt,
+                    20.0,
+                    45.0,
+                    self.font_size,
+                    self.theme.primary,
+                );
+            }
+        }
         fill_round_rect(
             &mut pixmap,
+            12.0 + input_offset,
             12.0,
-            12.0,
-            width as f32 - 24.0,
+            width as f32 - 24.0 - input_offset,
             54.0,
             self.border_radius.min(27.0),
             self.theme.input,
         );
-        let (input_x, input_color) = if model.input.is_empty() && !model.is_help_mode() {
+        let show_placeholder = model.input.is_empty() && !model.is_help_mode();
+        let (input_x, input_color) = if show_placeholder {
             (36.0, self.theme.secondary)
         } else {
             (32.0, self.theme.primary)
         };
+        let input_x = input_x + input_offset;
+        let input_size = self.font_size + 5.0;
+        let displayed_input = model.displayed_input();
+        let input_text = if show_placeholder && model.dmenu.is_some() {
+            self.fit_text(&displayed_input, input_size, width as f32 - input_x - 24.0)
+        } else {
+            Cow::Borrowed(displayed_input.as_ref())
+        };
         self.text(
             &mut pixmap,
-            &model.displayed_input(),
+            &input_text,
             input_x,
             45.0,
-            self.font_size + 5.0,
+            input_size,
             input_color,
         );
         if !model.is_help_mode() && self.cursor_visible {
-            let caret_x = self.caret_x(model).min(width as f32 - 32.0);
+            let caret_x = (self.caret_x(model) + input_offset).min(width as f32 - 32.0);
             fill_round_rect(
                 &mut pixmap,
                 caret_x,
@@ -2153,7 +2204,8 @@ mod tests {
             Config::default(),
             vec!["Apple".into(), "Banana".into(), "Orange".into()],
             DmenuModelOptions {
-                prompt: "Pick".into(),
+                prompt: String::new(),
+                placeholder: "Pick".into(),
                 initial_query: "ban".into(),
                 print_query: false,
                 fuzzy: true,
@@ -2171,7 +2223,8 @@ mod tests {
             Config::default(),
             vec!["Apple".into()],
             DmenuModelOptions {
-                prompt: "Pick".into(),
+                prompt: String::new(),
+                placeholder: "Pick".into(),
                 initial_query: "missing".into(),
                 print_query: true,
                 fuzzy: false,
@@ -2183,12 +2236,67 @@ mod tests {
     }
 
     #[test]
+    fn dmenu_prompt_stays_left_of_input_and_placeholder_disappears_on_typing() {
+        let width = 240;
+        let height = 240;
+        let prompt = "Pilih daftar crème brûlée yang panjang";
+        let placeholder = "Ketik nama pilihan yang ingin Anda cari…";
+        for theme in ["dark", "light"] {
+            let mut config = Config::default();
+            config.general.theme = theme.into();
+            let mut renderer = Renderer::new(&config).unwrap();
+            let label = renderer.fit_text(prompt, renderer.font_size, width as f32 / 3.0);
+            assert!(label.ends_with('…'));
+            let label_width = renderer.text_width(&label, renderer.font_size);
+            assert!(label_width <= width as f32 / 3.0);
+            let field_left = 32 + label_width.ceil() as usize;
+            let mut model = UiModel::dmenu(
+                config,
+                Vec::new(),
+                DmenuModelOptions {
+                    prompt: prompt.into(),
+                    placeholder: placeholder.into(),
+                    initial_query: String::new(),
+                    print_query: false,
+                    fuzzy: true,
+                    case_sensitive: false,
+                    password: false,
+                },
+            );
+            let mut canvas = vec![0; (width * height * 4) as usize];
+            renderer.draw(&mut canvas, width, height, &model);
+
+            assert_eq!(model.displayed_input(), placeholder);
+            let label_pixels = |canvas: &[u8]| {
+                canvas[..(width * 54 * 4) as usize]
+                    .chunks_exact(width as usize * 4)
+                    .flat_map(|row| row[..field_left * 4].iter().copied())
+                    .collect::<Vec<_>>()
+            };
+            let before = label_pixels(&canvas);
+            assert!(before
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| *pixel != renderer.theme.background));
+            let caret = (35 * width as usize + field_left + 20) * 4;
+            assert_eq!(&canvas[caret..caret + 4], &renderer.theme.primary);
+
+            model.insert("Apple");
+            renderer.draw(&mut canvas, width, height, &model);
+            assert_eq!(model.displayed_input(), "Apple");
+            assert_eq!(label_pixels(&canvas), before);
+        }
+    }
+
+    #[test]
     fn renderer_draws_color_rounded_swatch() {
         let mut model = UiModel::dmenu(
             Config::default(),
             vec!["#3498db".into()],
             DmenuModelOptions {
-                prompt: "Color".into(),
+                prompt: String::new(),
+                placeholder: "Color".into(),
                 initial_query: String::new(),
                 print_query: false,
                 fuzzy: true,
@@ -2228,7 +2336,8 @@ mod tests {
             Config::default(),
             vec!["Landscape".into()],
             DmenuModelOptions {
-                prompt: "Image".into(),
+                prompt: String::new(),
+                placeholder: "Image".into(),
                 initial_query: String::new(),
                 print_query: false,
                 fuzzy: true,
@@ -2301,7 +2410,8 @@ mod tests {
             Config::default(),
             vec!["Preview".into()],
             DmenuModelOptions {
-                prompt: "Image".into(),
+                prompt: String::new(),
+                placeholder: "Image".into(),
                 initial_query: String::new(),
                 print_query: false,
                 fuzzy: true,
@@ -2494,7 +2604,8 @@ mod tests {
             config,
             (0..8).map(|index| format!("entry-{index}")).collect(),
             DmenuModelOptions {
-                prompt: "Pick".into(),
+                prompt: String::new(),
+                placeholder: "Pick".into(),
                 initial_query: String::new(),
                 print_query: false,
                 fuzzy: false,
@@ -2515,7 +2626,8 @@ mod tests {
             Config::default(),
             vec!["secret-entry".into()],
             DmenuModelOptions {
-                prompt: "Password".into(),
+                prompt: String::new(),
+                placeholder: "Password".into(),
                 initial_query: "sensitive".into(),
                 print_query: true,
                 fuzzy: true,
@@ -2570,7 +2682,8 @@ mod tests {
             Config::default(),
             (0..5).map(|i| format!("item-{i}")).collect(),
             DmenuModelOptions {
-                prompt: "Pick".into(),
+                prompt: String::new(),
+                placeholder: "Pick".into(),
                 initial_query: String::new(),
                 print_query: false,
                 fuzzy: false,
@@ -2682,6 +2795,7 @@ mod tests {
             vec!["20\t😀".into(), "9\tHubungkan".into()],
             DmenuModelOptions {
                 prompt: String::new(),
+                placeholder: String::new(),
                 initial_query: String::new(),
                 print_query: false,
                 fuzzy: true,

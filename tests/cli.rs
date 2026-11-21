@@ -6,7 +6,15 @@ use std::{
 #[test]
 fn dmenu_headless_keeps_stdout_clean() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_waymenu"))
-        .args(["--dmenu", "--query", "ban"])
+        .args([
+            "--dmenu",
+            "--prompt",
+            "Fruit",
+            "--placeholder",
+            "Choose a fruit",
+            "--query",
+            "ban",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -92,9 +100,14 @@ fn password_dmenu_never_writes_input_or_selection_to_stdout() {
 
 #[test]
 fn missing_option_values_fail_with_diagnostic() {
-    for argument in ["--query", "--mode"] {
+    for args in [
+        &["--query"][..],
+        &["--mode"][..],
+        &["--dmenu", "--prompt"][..],
+        &["--dmenu", "--placeholder"][..],
+    ] {
         let output = Command::new(env!("CARGO_BIN_EXE_waymenu"))
-            .arg(argument)
+            .args(args)
             .output()
             .unwrap();
         assert!(!output.status.success());

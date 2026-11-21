@@ -128,9 +128,12 @@ directory. The plugin SDK and ABI v2 contract are in `plugin-api/`.
 
 ```sh
 cargo run --release -- --mode binary
-printf 'Apple\nBanana\nOrange\n' | cargo run --release -- --dmenu --prompt 'Fruit'
+printf 'Apple\nBanana\nOrange\n' | cargo run --release -- --dmenu --prompt 'Fruit' --placeholder 'Filter choices…'
 cargo run --release -- --monitor HDMI-A-1
 ```
+
+`--prompt` displays a label to the left of the input. `--placeholder` displays
+text inside the input while it is empty and defaults to `Select…`.
 
 Shell input is executed only when passed explicitly as a submitted query:
 

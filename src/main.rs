@@ -215,7 +215,8 @@ fn print_results(results: &[SearchResult]) {
 }
 
 fn dmenu(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let prompt = option_string(args, "--prompt")?;
+    let prompt = option_string(args, "--prompt")?.unwrap_or_default();
+    let placeholder = option_string(args, "--placeholder")?.unwrap_or("Select…");
     let items: Vec<_> = io::stdin().lock().lines().collect::<Result<_, _>>()?;
     let query = args
         .iter()
@@ -236,9 +237,8 @@ fn dmenu(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             config.general.height = Some(u32::try_from(height)?.clamp(120, 2160));
         }
         let options = waymenu::wayland::DmenuOptions {
-            prompt: prompt
-                .map(str::to_owned)
-                .unwrap_or_else(|| "Select…".into()),
+            prompt: prompt.into(),
+            placeholder: placeholder.into(),
             initial_query: String::new(),
             print_query: args.iter().any(|a| a == "--print-query"),
             fuzzy: !args.iter().any(|a| a == "--no-fuzzy"),
@@ -258,7 +258,8 @@ fn dmenu(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         config,
         items,
         waymenu::ui::DmenuModelOptions {
-            prompt: prompt.map(str::to_owned).unwrap_or_default(),
+            prompt: prompt.into(),
+            placeholder: placeholder.into(),
             initial_query: query,
             print_query: args.iter().any(|a| a == "--print-query"),
             fuzzy: !args.iter().any(|a| a == "--no-fuzzy"),
@@ -299,5 +300,5 @@ fn option_string<'a>(
 }
 
 fn print_help() {
-    println!("waymenu {}\n\nUsage: waymenu [OPTIONS]\n\n  --query TEXT       Search without opening a UI\n  --mode MODE        Open applications, binary, or clipboard mode\n  --input TEXT       Launch with initial input text or prefix\n  --dmenu            Read newline-separated choices from stdin\n  --prompt TEXT      Prompt used with --dmenu\n  --lines NUMBER     Maximum visible dmenu results\n  --width PIXELS     Dmenu width\n  --height PIXELS    Dmenu height\n  --monitor OUTPUT   Output name, model, description, or zero-based index\n  --password         Mask dmenu input\n  --no-fuzzy         Disable dmenu fuzzy matching\n  --case-sensitive   Match dmenu input case-sensitively\n  --print-query      Return raw query when dmenu has no match\n  --help             Show this help\n  --version          Show version\n\nPrefixes: $ searches PATH; ! executes only the explicitly submitted command.", env!("CARGO_PKG_VERSION"));
+    println!("waymenu {}\n\nUsage: waymenu [OPTIONS]\n\n  --query TEXT       Search without opening a UI\n  --mode MODE        Open applications, binary, or clipboard mode\n  --input TEXT       Launch with initial input text or prefix\n  --dmenu            Read newline-separated choices from stdin\n  --prompt TEXT      Label to the left of the dmenu input\n  --placeholder TEXT Text inside the dmenu input when empty\n  --lines NUMBER     Maximum visible dmenu results\n  --width PIXELS     Dmenu width\n  --height PIXELS    Dmenu height\n  --monitor OUTPUT   Output name, model, description, or zero-based index\n  --password         Mask dmenu input\n  --no-fuzzy         Disable dmenu fuzzy matching\n  --case-sensitive   Match dmenu input case-sensitively\n  --print-query      Return raw query when dmenu has no match\n  --help             Show this help\n  --version          Show version\n\nPrefixes: $ searches PATH; ! executes only the explicitly submitted command.", env!("CARGO_PKG_VERSION"));
 }

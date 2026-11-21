@@ -51,6 +51,7 @@ pub fn run_with_input(config: Config, input: &str) -> Result<Action, Box<dyn std
 
 pub struct DmenuOptions {
     pub prompt: String,
+    pub placeholder: String,
     pub initial_query: String,
     pub print_query: bool,
     pub fuzzy: bool,
@@ -68,6 +69,7 @@ pub fn run_dmenu(
         items,
         DmenuModelOptions {
             prompt: options.prompt,
+            placeholder: options.placeholder,
             initial_query: options.initial_query,
             print_query: options.print_query,
             fuzzy: options.fuzzy,
