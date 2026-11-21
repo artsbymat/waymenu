@@ -26,7 +26,7 @@ jobs:
           sudo apt-get install -y libwayland-dev libxkbcommon-dev pkg-config
           rustup update stable
 
-      - name: Build and test Waymenu and plugins
+      - name: Build Waymenu and test plugins
         run: |
           cargo +stable build --release --locked
           install -Dm755 target/release/waymenu release/waymenu
@@ -39,7 +39,11 @@ jobs:
             install -Dm755 "$plugin_dir/target/release/lib$plugin.so" "release/plugins/lib$plugin.so"
           done
 
-          cargo +stable test --locked --workspace
+      - name: Test Waymenu workspace
+        run: cargo +stable test --locked --workspace
+
+      - name: Package release archive
+        run: |
           install -m644 LICENSE release/LICENSE
           tar -C release -czf "waymenu-$GITHUB_REF_NAME-linux-x86_64.tar.gz" .
 

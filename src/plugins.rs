@@ -700,8 +700,9 @@ mod tests {
         assert!(!results.is_empty());
         assert_eq!(results[0].id, "sysupgrade");
 
-        let search_results = plugin.search("firefox");
-        assert!(!search_results.is_empty());
+        let search_results = plugin.search("-Sc");
+        assert_eq!(search_results.len(), 1);
+        assert_eq!(search_results[0].id, "cleancache");
 
         let help_item = SearchResult {
             id: "help".into(),
