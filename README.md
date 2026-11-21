@@ -5,6 +5,27 @@ Waymenu is a low-overhead native Wayland launcher. Running `waymenu` opens a cen
 background daemon is used. The launcher provides application discovery, fuzzy ranking,
 usage history, PATH binary search, explicit shell execution, and a scriptable dmenu mode.
 
+## Install from GitHub Releases
+
+Download the Linux x86-64 archive from [GitHub Releases](https://github.com/artsbymat/waymenu/releases) and extract it. From the extracted directory, install the executable and plugins:
+
+```sh
+install -Dm755 waymenu "$HOME/.local/bin/waymenu"
+plugin_dir="${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins"
+mkdir -p "$plugin_dir"
+install -m755 plugins/*.so "$plugin_dir/"
+```
+
+Add `~/.local/bin` to `PATH` if needed. The release build uses Ubuntu 24.04
+and requires `libxkbcommon` at runtime. Plugins can require external tools
+such as `wl-copy` and `clipvault`.
+
+Pushing a version tag such as `v0.1.0` triggers the release workflow. GitHub
+Actions builds and tests Waymenu and every bundled plugin before publishing
+the archive.
+
+## Build from source
+
 ```sh
 cargo run -- --query fire
 cargo run -- --query '$cargo'
