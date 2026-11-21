@@ -284,8 +284,8 @@ fn process_entries(raw_entries: &[backend::ClipboardRawEntry], query: &str) -> V
             .next()
             .unwrap_or(&entry.content)
             .trim();
-        let title = if first_line.len() > 80 {
-            format!("{}...", &first_line[..77])
+        let title = if first_line.chars().nth(80).is_some() {
+            first_line.chars().take(77).chain("...".chars()).collect()
         } else {
             first_line.to_string()
         };
@@ -326,7 +326,6 @@ fn process_entries(raw_entries: &[backend::ClipboardRawEntry], query: &str) -> V
     }
 
     results.sort_by_key(|r| std::cmp::Reverse(r.score));
-    results.truncate(50);
     results
 }
 
@@ -346,6 +345,34 @@ mod tests {
     #[test]
     fn execute_action_handles_empty_id() {
         assert!(matches!(execute_action(""), PluginAction::None));
+    }
+
+    #[test]
+    fn lists_all_entries_and_truncates_unicode_at_character_boundaries() {
+        let beginning = "a".repeat(76);
+        let mut entries: Vec<_> = (1..=50)
+            .map(|id| backend::ClipboardRawEntry {
+                id: id.to_string(),
+                content: "Short entry".into(),
+            })
+            .collect();
+        entries.push(backend::ClipboardRawEntry {
+            id: "51".into(),
+            content: format!("{beginning}➜ hidden suffix"),
+        });
+        entries.push(backend::ClipboardRawEntry {
+            id: "52".into(),
+            content: "界".repeat(80),
+        });
+
+        let results = process_entries(&entries, "");
+        assert_eq!(results.len(), entries.len());
+        assert_eq!(results[50].title, format!("{beginning}➜..."));
+        assert_eq!(results[51].title, entries[51].content);
+
+        let matches = process_entries(&entries, "hidden suffix");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, "51");
     }
 
     #[test]
