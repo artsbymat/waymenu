@@ -11,4 +11,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rink-core = { version = "0.9", features = ["bundle-files", "serde_json"] }
+tempfile = "3.27"
 waymenu-plugin-api = { path = "../../plugin-api" }

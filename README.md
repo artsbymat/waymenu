@@ -66,8 +66,8 @@ Choose [Chrome History](plugins/chrome-history/README.md) for Google Chrome Stab
 or [Brave Origin History](plugins/braveorigin-history/README.md) for Brave Origin. With either
 plugin, type `h ` to search across profiles and open a result in its source profile.
 
-The Rink calculator and unit-conversion plugin is built separately and uses the `=`
-prefix. It is not a dependency of the Waymenu executable:
+The [Rink calculator](plugins/rink/README.md) uses the `= ` prefix for
+calculations and unit conversions. Press Enter to copy the result.
 
 ```sh
 cargo build --manifest-path plugins/rink/Cargo.toml --release
@@ -76,7 +76,10 @@ cp plugins/rink/target/release/librink.so \
   "${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins/"
 ```
 
-The Clipboard plugin integrates with `clipvault` (or `cliphist`) using the `cb ` prefix:
+The [Emoji Picker](plugins/emoji/README.md) uses the `e ` prefix to find and copy emojis.
+
+Use the [Clipboard plugin](plugins/clipboard/README.md) with the `cb ` prefix
+to search history from `clipvault` or `cliphist`.
 
 ```sh
 cargo build --manifest-path plugins/clipboard/Cargo.toml --release
@@ -95,7 +98,8 @@ You can bind it in Hyprland directly:
 bind = SUPER, V, exec, waymenu --input 'cb '
 ```
 
-The Kill Process plugin allows searching and terminating running processes using the `k ` prefix:
+Use the [Kill Process plugin](plugins/kill/README.md) with the `k ` prefix to
+find and signal running processes.
 
 ```sh
 cargo build --manifest-path plugins/kill/Cargo.toml --release
@@ -115,7 +119,8 @@ You can also bind it in Hyprland directly:
 bind = SUPER, Escape, exec, waymenu --input 'k '
 ```
 
-The Pacman plugin allows searching, installing, and managing Arch Linux packages using the `pac ` prefix:
+Use the [Pacman plugin](plugins/pacman/README.md) with the `pac ` prefix to
+search, install, and manage Arch Linux packages.
 
 ```sh
 cargo build --manifest-path plugins/pacman/Cargo.toml --release
@@ -135,8 +140,7 @@ You can also bind it in Hyprland directly:
 bind = SUPER, P, exec, waymenu --input 'pac '
 ```
 
-Then enter expressions such as `=2+2` or `=1 mile -> km`; Enter copies the result with
-`wl-copy`. For development, `WAYMENU_PLUGIN_DIR=/path/to/plugins` overrides the plugin
+For development, `WAYMENU_PLUGIN_DIR=/path/to/plugins` overrides the plugin
 directory. The plugin SDK and ABI v2 contract are in `plugin-api/`.
 
 ```sh

@@ -2,6 +2,7 @@ use std::{
     env,
     io::{self, BufRead, Write},
     process::{Command, ExitCode, Stdio},
+    time::{Duration, Instant},
 };
 use waymenu::{
     applications, binary, config::Config, history::History, search, Action, SearchResult,
@@ -141,7 +142,15 @@ fn dispatch(query: &str, config: &Config) -> Result<(), Box<dyn std::error::Erro
     }
     let plugin_manager = waymenu::plugins::PluginManager::from_config(config);
     if let Some((plugin, plugin_query)) = plugin_manager.select(query) {
-        let results = plugin.search(plugin_query);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut results = plugin.search(plugin_query);
+        while results.iter().any(SearchResult::is_pending) {
+            if Instant::now() >= deadline {
+                return Err("plugin search timed out".into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            results = plugin.search(plugin_query);
+        }
         print_results(&results);
         return Ok(());
     }

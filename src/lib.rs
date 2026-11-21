@@ -19,6 +19,12 @@ pub struct SearchResult {
     pub metadata: Option<String>,
 }
 
+impl SearchResult {
+    pub fn is_pending(&self) -> bool {
+        self.metadata.as_deref() == Some(waymenu_plugin_api::PENDING_RESULT_METADATA)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
     LaunchApplication(String),

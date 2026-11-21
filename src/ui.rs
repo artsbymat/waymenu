@@ -220,6 +220,9 @@ impl UiModel {
             return;
         }
         if let Some(item) = self.results.get(self.selected) {
+            if item.is_pending() {
+                return;
+            }
             self.input = if self.dmenu.is_some() {
                 item.title.clone()
             } else if self.input.starts_with(&self.config.binary.prefix) {
@@ -589,6 +592,14 @@ impl UiModel {
         self.binary_results = Some(binaries.iter().map(Binary::as_result).collect());
         self.binaries = Some(binaries);
         self.refresh();
+    }
+
+    pub(crate) fn refresh_pending_results(&mut self) -> bool {
+        if self.results.iter().any(SearchResult::is_pending) {
+            self.refresh();
+            return true;
+        }
+        false
     }
 
     fn refresh(&mut self) {

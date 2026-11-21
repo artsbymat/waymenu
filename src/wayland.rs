@@ -183,11 +183,12 @@ fn run_model(model: UiModel, config: Config) -> Result<Action, Box<dyn std::erro
         .insert_source(blink_timer, |_deadline, _, state| {
             if !state.model.exit && state.configured && !state.model.is_help_mode() {
                 let idle = state.last_cursor_activity.elapsed();
-                if idle >= std::time::Duration::from_millis(400) {
-                    state.cursor_visible = !state.cursor_visible;
-                    state.draw();
-                } else if !state.cursor_visible {
-                    state.cursor_visible = true;
+                let previous_visibility = state.cursor_visible;
+                state.cursor_visible =
+                    idle < std::time::Duration::from_millis(400) || !previous_visibility;
+                if state.model.refresh_pending_results()
+                    || previous_visibility != state.cursor_visible
+                {
                     state.draw();
                 }
             }
@@ -389,6 +390,14 @@ impl State {
     }
 
     fn execute_selection(&mut self) {
+        if self
+            .model
+            .results
+            .get(self.model.selected)
+            .is_some_and(crate::SearchResult::is_pending)
+        {
+            return;
+        }
         let action = self.model.selected_action();
         if self.model.is_shell_input() {
             if let Action::RunShell(command) = action {

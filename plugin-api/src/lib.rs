@@ -8,6 +8,7 @@ use std::ffi::{c_char, c_void, CString};
 
 pub const ABI_VERSION: u32 = 2;
 pub const AUTOCOMPLETE_METADATA_PREFIX: &str = "autocomplete:";
+pub const PENDING_RESULT_METADATA: &str = "plugin-pending";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PluginResult {

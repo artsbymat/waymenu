@@ -1,14 +1,31 @@
-use rink_core::Context;
+mod currency;
+
+use rink_core::{output::QueryError, Context};
 use std::{
     ffi::{c_char, c_void, CStr},
     panic::{catch_unwind, AssertUnwindSafe},
+    task::Poll,
 };
 use waymenu_plugin_api::{
     free_json, into_json, PluginAction, PluginApiV2, PluginResult, ABI_VERSION,
+    PENDING_RESULT_METADATA,
 };
 
 struct State {
     context: Context,
+    rates: currency::Rates,
+}
+
+fn currency_status(title: &str, description: impl Into<String>, pending: bool) -> PluginResult {
+    PluginResult {
+        id: String::new(),
+        title: title.into(),
+        description: description.into(),
+        score: 10_000,
+        icon: Some("accessories-calculator".into()),
+        image: None,
+        metadata: pending.then(|| PENDING_RESULT_METADATA.into()),
+    }
 }
 
 fn new_context() -> Option<Context> {
@@ -39,7 +56,11 @@ pub extern "C" fn waymenu_plugin_v2() -> PluginApiV2 {
 
 unsafe extern "C" fn create() -> *mut c_void {
     catch_unwind(|| match new_context() {
-        Some(context) => Box::into_raw(Box::new(State { context })).cast(),
+        Some(context) => Box::into_raw(Box::new(State {
+            context,
+            rates: currency::Rates::new(),
+        }))
+        .cast(),
         None => {
             eprintln!("waymenu-rink: could not initialize Rink context");
             std::ptr::null_mut()
@@ -66,11 +87,33 @@ unsafe extern "C" fn search(state: *mut c_void, query: *const c_char) -> *mut c_
         let Ok(query) = unsafe { CStr::from_ptr(query) }.to_str() else {
             return into_json(&Vec::<PluginResult>::new());
         };
-        if query.trim().is_empty() {
+        let query = query.trim();
+        if query.is_empty() {
             return into_json(&Vec::<PluginResult>::new());
         }
-        match rink_core::one_line(&mut state.context, query.trim()) {
-            Ok(answer) => {
+        let mut answer = rink_core::eval(&mut state.context, query);
+        if matches!(answer, Err(QueryError::MissingDeps(_))) {
+            match state.rates.poll(&mut state.context) {
+                Poll::Pending => {
+                    return into_json(&[currency_status(
+                        "Fetching exchange rates…",
+                        "Downloading from rinkcalc.app",
+                        true,
+                    )])
+                }
+                Poll::Ready(Err(error)) => {
+                    return into_json(&[currency_status(
+                        "Exchange rates unavailable",
+                        error,
+                        false,
+                    )])
+                }
+                Poll::Ready(Ok(())) => answer = rink_core::eval(&mut state.context, query),
+            }
+        }
+        match answer {
+            Ok(reply) => {
+                let answer = reply.to_string();
                 let (title, description) = answer
                     .split_once(" (")
                     .map(|(title, description)| {
@@ -90,6 +133,11 @@ unsafe extern "C" fn search(state: *mut c_void, query: *const c_char) -> *mut c_
                     metadata: Some("rink".into()),
                 }])
             }
+            Err(error @ QueryError::MissingDeps(_)) => into_json(&[currency_status(
+                "Exchange rate unavailable",
+                error.to_string(),
+                false,
+            )]),
             Err(_) => into_json(&Vec::<PluginResult>::new()),
         }
     }))
@@ -107,6 +155,9 @@ unsafe extern "C" fn action(state: *mut c_void, result_id: *const c_char) -> *mu
         let Ok(result) = unsafe { CStr::from_ptr(result_id) }.to_str() else {
             return into_json(&PluginAction::None);
         };
+        if result.is_empty() {
+            return into_json(&PluginAction::None);
+        }
         into_json(&PluginAction::CopyText(result.to_owned()))
     }))
     .unwrap_or(std::ptr::null_mut())
