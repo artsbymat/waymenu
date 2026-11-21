@@ -11,6 +11,7 @@ use std::{
 use serde::Deserialize;
 use waymenu_plugin_api::{
     free_json, into_json, PluginAction, PluginApiV2, PluginResult, ABI_VERSION,
+    AUTOCOMPLETE_METADATA_PREFIX,
 };
 
 #[derive(Deserialize)]
@@ -94,11 +95,14 @@ impl State {
                 )],
                 Source::Search { url } => {
                     let url = url.replace("{query}", &encode_query(query));
-                    vec![result(
-                        &url,
-                        format!("Search {} for \"{query}\"", provider.name),
-                        url.clone(),
-                    )]
+                    vec![PluginResult {
+                        metadata: Some(format!("{AUTOCOMPLETE_METADATA_PREFIX}{shortcut} {query}")),
+                        ..result(
+                            &url,
+                            format!("Search {} for \"{query}\"", provider.name),
+                            url.clone(),
+                        )
+                    }]
                 }
                 Source::Bookmarks { bookmarks } => {
                     let query = query.to_lowercase();
@@ -109,7 +113,13 @@ impl State {
                                 || bookmark.name.to_lowercase().contains(&query)
                                 || bookmark.url.to_lowercase().contains(&query)
                         })
-                        .map(|bookmark| result(&bookmark.url, &bookmark.name, &bookmark.url))
+                        .map(|bookmark| PluginResult {
+                            metadata: Some(format!(
+                                "{AUTOCOMPLETE_METADATA_PREFIX}{shortcut} {}",
+                                bookmark.name
+                            )),
+                            ..result(&bookmark.url, &bookmark.name, &bookmark.url)
+                        })
                         .collect()
                 }
             };
@@ -330,14 +340,26 @@ url = "https://{query}/"
                 .collect::<Vec<_>>(),
             ["next", "yt"]
         );
-        assert_eq!(state.search("y")[0].title, "yt");
+        let partial_shortcut = state.search("y");
+        assert_eq!(partial_shortcut[0].title, "yt");
+        assert!(partial_shortcut[0].metadata.is_none());
         assert!(state.search("yt")[0].id.is_empty());
+        let search = state.search("yt C++ & é #");
         assert_eq!(
-            state.search("yt C++ & é #")[0].id,
+            search[0].id,
             "https://www.youtube.com/results?search_query=C%2B%2B+%26+%C3%A9+%23&sort=recent"
         );
+        assert_eq!(
+            search[0].metadata.as_deref(),
+            Some("autocomplete:yt C++ & é #")
+        );
         assert_eq!(state.search("next").len(), 2);
-        assert_eq!(state.search("next GUIDE")[0].title, "Installation Guide");
+        let bookmark = state.search("next GUIDE");
+        assert_eq!(bookmark[0].title, "Installation Guide");
+        assert_eq!(
+            bookmark[0].metadata.as_deref(),
+            Some("autocomplete:next Installation Guide")
+        );
         assert_eq!(state.search("next /routing")[0].title, "Routing");
         assert!(state.search("missing query").is_empty());
     }

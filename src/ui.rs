@@ -239,7 +239,14 @@ impl UiModel {
                 } else {
                     ""
                 };
-                format!("{}{}{}", plugin.prefix(), separator, item.title)
+                let completion = item
+                    .metadata
+                    .as_deref()
+                    .and_then(|value| {
+                        value.strip_prefix(waymenu_plugin_api::AUTOCOMPLETE_METADATA_PREFIX)
+                    })
+                    .unwrap_or(&item.title);
+                format!("{}{separator}{completion}", plugin.prefix())
             } else {
                 item.title.clone()
             };
@@ -2255,6 +2262,19 @@ mod tests {
             model.selected_action(),
             Action::LaunchBinary("/usr/bin/cargo".into())
         );
+    }
+
+    #[test]
+    fn plugin_autocomplete_can_supply_query_separate_from_title() {
+        let mut model = UiModel::new(Config::default());
+        model.insert("!partial");
+        model.results[0].title = "Abigail".into();
+        model.results[0].metadata = Some("autocomplete:sv Abigail".into());
+
+        model.autocomplete();
+
+        assert_eq!(model.input, "!sv Abigail");
+        assert_eq!(model.cursor, model.input.len());
     }
 
     #[test]

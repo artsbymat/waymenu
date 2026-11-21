@@ -3,6 +3,8 @@
 Type `s ` in Waymenu to list your web search shortcuts. Select one and press
 Tab to complete its shortcut, or type it directly. Press Enter on a search
 result or bookmark to open it in your browser.
+Tab on a bookmark fills in its name and keeps the shortcut. For example,
+`s b whatsapp` becomes `s b WhatsApp Web`.
 
 To build and install the plugin from source:
 
