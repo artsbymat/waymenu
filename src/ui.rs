@@ -2392,6 +2392,7 @@ mod tests {
     fn application_results_scroll_past_visible_limit() {
         let mut config = Config::default();
         config.general.max_results = 2;
+        config.general.remember_history = false;
         let mut model = UiModel::new(config);
         model.applications = (0..8)
             .map(|index| DesktopApplication {
@@ -2405,6 +2406,7 @@ mod tests {
                 desktop_file: PathBuf::new(),
             })
             .collect();
+        model.application_results.clear();
         model.refresh();
         assert_eq!(model.results.len(), 8);
         for _ in 0..7 {
