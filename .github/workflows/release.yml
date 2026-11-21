@@ -34,9 +34,10 @@ jobs:
           for manifest in plugins/*/Cargo.toml; do
             plugin_dir=$(dirname "$manifest")
             plugin=$(basename "$plugin_dir")
+            library="lib${plugin//-/_}.so"
             cargo +stable build --release --locked --manifest-path "$manifest"
             cargo +stable test --locked --manifest-path "$manifest"
-            install -Dm755 "$plugin_dir/target/release/lib$plugin.so" "release/plugins/lib$plugin.so"
+            install -Dm755 "$plugin_dir/target/release/$library" "release/plugins/$library"
           done
 
       - name: Test Waymenu workspace

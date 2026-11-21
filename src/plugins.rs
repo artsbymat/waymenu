@@ -503,16 +503,16 @@ mod tests {
 
     #[test]
     fn manager_selects_space_delimited_prefix_without_hijacking_apps() {
-        struct MockGooglePlugin;
-        impl Plugin for MockGooglePlugin {
+        struct MockWebSearchPlugin;
+        impl Plugin for MockWebSearchPlugin {
             fn id(&self) -> &str {
-                "google"
+                "web-search"
             }
             fn prefix(&self) -> &str {
-                "g "
+                "s "
             }
             fn name(&self) -> &str {
-                "Google"
+                "Web Search"
             }
             fn description(&self) -> &str {
                 "Search"
@@ -528,57 +528,53 @@ mod tests {
         let manager = PluginManager {
             plugins: vec![
                 Box::new(ShellPlugin::new("!".into(), None)),
-                Box::new(MockGooglePlugin),
+                Box::new(MockWebSearchPlugin),
             ],
         };
 
-        // Matches with query
-        let (plugin, query) = manager.select("g hyprland linux").unwrap();
-        assert_eq!(plugin.id(), "google");
-        assert_eq!(query, "hyprland linux");
+        let (plugin, query) = manager.select("s g hyprland linux").unwrap();
+        assert_eq!(plugin.id(), "web-search");
+        assert_eq!(query, "g hyprland linux");
 
-        // Matches prefix with trailing space and empty query
-        let (plugin, query) = manager.select("g ").unwrap();
-        assert_eq!(plugin.id(), "google");
+        let (plugin, query) = manager.select("s ").unwrap();
+        assert_eq!(plugin.id(), "web-search");
         assert_eq!(query, "");
 
-        // Does NOT hijack "g" alone or words starting with 'g' (e.g. google chrome, gimp, git)
-        assert!(manager.select("g").is_none());
-        assert!(manager.select("gimp").is_none());
-        assert!(manager.select("google-chrome").is_none());
-        assert!(manager.select("git").is_none());
+        assert!(manager.select("s").is_none());
+        assert!(manager.select("steam").is_none());
     }
 
     #[test]
-    fn loads_and_executes_built_google_plugin() {
+    fn loads_built_web_search_plugin() {
         let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("plugins/google/target/release/libgoogle.so");
+            .join("plugins/web-search/target/release/libweb_search.so");
         if !so_path.exists() {
             return;
         }
         let plugin = DynamicPlugin::load(&so_path).unwrap();
-        assert_eq!(plugin.id(), "google");
-        assert_eq!(plugin.prefix(), "g ");
-        // Ensure state is uninitialized before search
+        assert_eq!(plugin.id(), "web-search");
+        assert_eq!(plugin.prefix(), "s ");
         assert!(plugin.state.load(Ordering::Acquire).is_null());
 
-        let results = plugin.search("hyprland linux");
-        // Ensure state was initialized on demand
+        plugin.search("");
         assert!(!plugin.state.load(Ordering::Acquire).is_null());
-        assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0].id,
-            "https://www.google.com/search?q=hyprland+linux"
-        );
-        assert_eq!(results[0].title, "Search Google for \"hyprland linux\"");
 
-        let action = plugin.action(&results[0]);
+        let mut bookmark = SearchResult {
+            id: "https://example.com".into(),
+            title: "Example".into(),
+            description: String::new(),
+            score: 1,
+            icon: None,
+            image: None,
+            metadata: None,
+        };
         assert_eq!(
-            action,
-            Action::OpenUrl("https://www.google.com/search?q=hyprland+linux".into())
+            plugin.action(&bookmark),
+            Action::OpenUrl(bookmark.id.clone())
         );
+        bookmark.id = "file:///tmp/bookmark".into();
+        assert_eq!(plugin.action(&bookmark), Action::None);
 
-        // Ensure unload releases state
         plugin.unload();
         assert!(plugin.state.load(Ordering::Acquire).is_null());
     }
@@ -629,32 +625,6 @@ mod tests {
 
         let action = plugin.action(&results[0]);
         assert_eq!(action, Action::CopyText("🔥".into()));
-    }
-
-    #[test]
-    fn loads_and_executes_built_youtube_plugin() {
-        let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("plugins/youtube/target/release/libyoutube.so");
-        if !so_path.exists() {
-            return;
-        }
-        let plugin = DynamicPlugin::load(&so_path).unwrap();
-        assert_eq!(plugin.id(), "youtube");
-        assert_eq!(plugin.prefix(), "yt ");
-
-        let results = plugin.search("hyprland linux");
-        assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0].id,
-            "https://www.youtube.com/results?search_query=hyprland+linux"
-        );
-        assert_eq!(results[0].title, "Search YouTube for \"hyprland linux\"");
-
-        let action = plugin.action(&results[0]);
-        assert_eq!(
-            action,
-            Action::OpenUrl("https://www.youtube.com/results?search_query=hyprland+linux".into())
-        );
     }
 
     #[test]

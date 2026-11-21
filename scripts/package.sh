@@ -41,26 +41,27 @@ install -m755 "$package_binary" "$package_stage/$package_name/waymenu"
 for plugin_cargo in plugins/*/Cargo.toml; do
   plugin_dir="$(dirname "$plugin_cargo")"
   plugin_name="$(basename "$plugin_dir")"
+  library="lib${plugin_name//-/_}.so"
 
   so_file=""
   if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
-    if [[ -n "${CARGO_BUILD_TARGET:-}" && -f "$CARGO_TARGET_DIR/$package_host/release/lib${plugin_name}.so" ]]; then
-      so_file="$CARGO_TARGET_DIR/$package_host/release/lib${plugin_name}.so"
-    elif [[ -f "$CARGO_TARGET_DIR/release/lib${plugin_name}.so" ]]; then
-      so_file="$CARGO_TARGET_DIR/release/lib${plugin_name}.so"
+    if [[ -n "${CARGO_BUILD_TARGET:-}" && -f "$CARGO_TARGET_DIR/$package_host/release/$library" ]]; then
+      so_file="$CARGO_TARGET_DIR/$package_host/release/$library"
+    elif [[ -f "$CARGO_TARGET_DIR/release/$library" ]]; then
+      so_file="$CARGO_TARGET_DIR/release/$library"
     fi
   fi
 
   if [[ -z "$so_file" ]]; then
-    if [[ -n "${CARGO_BUILD_TARGET:-}" && -f "$plugin_dir/target/$package_host/release/lib${plugin_name}.so" ]]; then
-      so_file="$plugin_dir/target/$package_host/release/lib${plugin_name}.so"
-    elif [[ -f "$plugin_dir/target/release/lib${plugin_name}.so" ]]; then
-      so_file="$plugin_dir/target/release/lib${plugin_name}.so"
+    if [[ -n "${CARGO_BUILD_TARGET:-}" && -f "$plugin_dir/target/$package_host/release/$library" ]]; then
+      so_file="$plugin_dir/target/$package_host/release/$library"
+    elif [[ -f "$plugin_dir/target/release/$library" ]]; then
+      so_file="$plugin_dir/target/release/$library"
     fi
   fi
 
   if [[ -n "$so_file" && -f "$so_file" ]]; then
-    install -m755 "$so_file" "$package_stage/$package_name/plugins/lib${plugin_name}.so"
+    install -m755 "$so_file" "$package_stage/$package_name/plugins/$library"
   else
     echo "Error: plugin binary not found for $plugin_name" >&2
     exit 1

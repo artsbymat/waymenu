@@ -50,6 +50,9 @@ Optional native plugins are loaded from `$XDG_CONFIG_HOME/waymenu/plugins` (or
 with `[plugins] dynamic = false`. No `.so` is needed for the normal launcher or shell
 plugin. Native plugins execute in the launcher process, so only install plugins you trust.
 
+Use the [Web Search plugin](plugins/web-search/README.md) with the `s ` prefix to
+search websites or open bookmarks from your own TOML files.
+
 The Rink calculator and unit-conversion plugin is built separately and uses the `=`
 prefix. It is not a dependency of the Waymenu executable:
 
