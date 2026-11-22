@@ -39,7 +39,17 @@ url = "https://www.google.com/search?q={query}"
 
 Type `s g hyprland window manager`. Waymenu URL-encodes the query and substitutes
 it for `{query}`. A search template takes an HTTP or HTTPS URL with one
-`{query}` in the query string.
+`{query}` in its path or query string.
+
+### `bi.toml` for KBBI
+
+```toml
+name = "Kamus Besar Bahasa Indonesia"
+type = "search"
+url = "https://kbbi.web.id/{query}"
+```
+
+Type `s bi kamus` and press Enter to open the entry.
 
 ### `yt.toml` for YouTube
 

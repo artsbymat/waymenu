@@ -94,7 +94,7 @@ impl State {
                     format!("Enter a search query for {}", provider.name),
                 )],
                 Source::Search { url } => {
-                    let url = url.replace("{query}", &encode_query(query));
+                    let url = url.replace("{query}", &encode_query(query, !has_path_query(url)));
                     vec![PluginResult {
                         metadata: Some(format!("{AUTOCOMPLETE_METADATA_PREFIX}{shortcut} {query}")),
                         ..result(
@@ -151,10 +151,11 @@ fn load_provider(path: &Path) -> Result<Provider, String> {
             let query = url.split('#').next().and_then(|url| url.split_once('?'));
             if !is_http_url(url)
                 || url.matches("{query}").count() != 1
-                || !query.is_some_and(|(_, query)| query.contains("{query}"))
+                || !(has_path_query(url)
+                    || query.is_some_and(|(_, query)| query.contains("{query}")))
             {
                 return Err(
-                    "url must be HTTP or HTTPS with one {query} in the query string".into(),
+                    "url must be HTTP or HTTPS with one {query} in the path or query string".into(),
                 );
             }
         }
@@ -185,14 +186,22 @@ fn is_http_url(url: &str) -> bool {
             .any(|ch| ch.is_whitespace() || ch.is_control() || ch == '\\')
 }
 
-fn encode_query(query: &str) -> String {
+fn has_path_query(url: &str) -> bool {
+    url.split(['?', '#'])
+        .next()
+        .and_then(|base| base.split_once("://"))
+        .and_then(|(_, rest)| rest.split_once('/'))
+        .is_some_and(|(_, path)| path.contains("{query}"))
+}
+
+fn encode_query(query: &str, space_as_plus: bool) -> String {
     let mut encoded = String::with_capacity(query.len());
     for byte in query.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 encoded.push(byte as char);
             }
-            b' ' => encoded.push('+'),
+            b' ' if space_as_plus => encoded.push('+'),
             _ => write!(encoded, "%{byte:02X}").unwrap(),
         }
     }
@@ -321,6 +330,24 @@ url = "https://nextjs.org/docs/app/routing"
         )
         .unwrap();
         fs::write(
+            directory.join("bi.toml"),
+            r#"
+name = "Kamus Besar Bahasa Indonesia"
+type = "search"
+url = "https://kbbi.web.id/{query}"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            directory.join("fragment.toml"),
+            r#"
+name = "Fragment"
+type = "search"
+url = "https://example.org/#/{query}"
+"#,
+        )
+        .unwrap();
+        fs::write(
             directory.join("bad.toml"),
             r#"
 name = "Bad"
@@ -338,12 +365,19 @@ url = "https://{query}/"
                 .iter()
                 .map(|row| row.title.as_str())
                 .collect::<Vec<_>>(),
-            ["next", "yt"]
+            ["bi", "next", "yt"]
         );
         let partial_shortcut = state.search("y");
         assert_eq!(partial_shortcut[0].title, "yt");
         assert!(partial_shortcut[0].metadata.is_none());
         assert!(state.search("yt")[0].id.is_empty());
+        assert!(state.search("bi ")[0]
+            .description
+            .contains("Kamus Besar Bahasa Indonesia"));
+        assert_eq!(
+            state.search("bi kerja / é #?")[0].id,
+            "https://kbbi.web.id/kerja%20%2F%20%C3%A9%20%23%3F"
+        );
         let search = state.search("yt C++ & é #");
         assert_eq!(
             search[0].id,
