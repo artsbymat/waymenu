@@ -429,6 +429,8 @@ name = "waymenu-rink-plugin"
 version = "0.1.0"
 dependencies = [
  "rink-core",
+ "serde",
+ "serde_json",
  "tempfile",
  "waymenu-plugin-api",
 ]

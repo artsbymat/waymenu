@@ -10,6 +10,10 @@ pub const ABI_VERSION: u32 = 2;
 pub const AUTOCOMPLETE_METADATA_PREFIX: &str = "autocomplete:";
 pub const PENDING_RESULT_METADATA: &str = "plugin-pending";
 
+/// Optional `waymenu_plugin_delete_result_v2` export. The host passes a live
+/// plugin state and a NUL-terminated result ID. Return true to refresh results.
+pub type DeleteResultFn = unsafe extern "C" fn(state: *mut c_void, id: *const c_char) -> bool;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PluginResult {
     pub id: String,

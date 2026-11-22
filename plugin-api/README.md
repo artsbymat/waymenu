@@ -19,6 +19,12 @@ Set result `metadata` to `plugin-pending` to show a temporary status row while a
 search is in progress. Waymenu repeats the active search until the plugin stops
 returning pending rows. Return the final results or an error row when ready.
 
+To support the Delete selected result shortcut (Shift+Delete by default), export
+`waymenu_plugin_delete_result_v2` with the `DeleteResultFn` signature. Waymenu
+passes the plugin state and the selected result's NUL-terminated ID once per
+keypress. Return `true` after deleting the item so Waymenu refreshes the list,
+or `false` to keep the list as it is. This export is optional for ABI v2 plugins.
+
 The launcher itself depends only on this small SDK and the dynamic loader. Rink and other
 optional functionality belongs in separate `cdylib` crates and is not linked into the
 Waymenu executable. Plugins run as trusted native code inside the launcher process.

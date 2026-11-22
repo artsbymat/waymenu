@@ -96,6 +96,7 @@ pub struct Keybindings {
     pub delete_word: String,
     pub delete_word_back: String,
     pub delete_forward: String,
+    pub delete_result: String,
     pub delete_word_forward: String,
     pub word_left: String,
     pub word_right: String,
@@ -171,6 +172,7 @@ impl Default for Keybindings {
             delete_word: "Ctrl+w".into(),
             delete_word_back: "Ctrl+BackSpace".into(),
             delete_forward: "Delete".into(),
+            delete_result: "Shift+Delete".into(),
             delete_word_forward: "Ctrl+Delete".into(),
             word_left: "Ctrl+Left".into(),
             word_right: "Ctrl+Right".into(),
@@ -295,7 +297,7 @@ impl Config {
 }
 
 impl Keybindings {
-    pub fn all(&self) -> [&str; 20] {
+    pub fn all(&self) -> [&str; 21] {
         [
             &self.execute,
             &self.close,
@@ -311,6 +313,7 @@ impl Keybindings {
             &self.delete_word,
             &self.delete_word_back,
             &self.delete_forward,
+            &self.delete_result,
             &self.delete_word_forward,
             &self.word_left,
             &self.word_right,

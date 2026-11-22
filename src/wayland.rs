@@ -240,7 +240,7 @@ impl State {
         self.last_cursor_activity = std::time::Instant::now();
     }
 
-    fn handle_key(&mut self, event: KeyEvent) {
+    fn handle_key(&mut self, event: KeyEvent, is_repeat: bool) {
         self.reset_cursor_blink();
         let key = event.keysym;
         let modifiers = self.modifiers;
@@ -269,6 +269,10 @@ impl State {
             self.execute_selection();
         } else if self.bindings.backspace.matches(key, modifiers) {
             self.model.backspace();
+        } else if self.bindings.delete_result.matches(key, modifiers) {
+            if !is_repeat {
+                self.model.delete_selected_result();
+            }
         } else if self.bindings.delete_forward.matches(key, modifiers) {
             self.model.delete_forward();
         } else if self.bindings.delete_word.matches(key, modifiers)
@@ -574,7 +578,7 @@ impl SeatHandler for State {
                     &seat,
                     None,
                     self.loop_handle.clone(),
-                    Box::new(|state, _, event| state.handle_key(event)),
+                    Box::new(|state, _, event| state.handle_key(event, true)),
                 )
                 .ok();
         }
@@ -632,7 +636,7 @@ impl KeyboardHandler for State {
         _: u32,
         event: KeyEvent,
     ) {
-        self.handle_key(event);
+        self.handle_key(event, false);
     }
     fn release_key(
         &mut self,
@@ -700,6 +704,7 @@ struct RuntimeBindings {
     delete_word: Binding,
     delete_word_back: Binding,
     delete_forward: Binding,
+    delete_result: Binding,
     delete_word_forward: Binding,
     word_left: Binding,
     word_right: Binding,
@@ -729,6 +734,7 @@ impl RuntimeBindings {
             delete_word: parse(&value.delete_word)?,
             delete_word_back: parse(&value.delete_word_back)?,
             delete_forward: parse(&value.delete_forward)?,
+            delete_result: parse(&value.delete_result)?,
             delete_word_forward: parse(&value.delete_word_forward)?,
             word_left: parse(&value.word_left)?,
             word_right: parse(&value.word_right)?,
@@ -845,6 +851,10 @@ mod tests {
             ..Default::default()
         };
         let none = Modifiers::default();
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
 
         // Ctrl + Left / Right
         assert!(bindings.word_left.matches(Keysym::Left, ctrl));
@@ -857,6 +867,9 @@ mod tests {
         assert!(bindings.delete_word_forward.matches(Keysym::Delete, ctrl));
         assert!(!bindings.delete_forward.matches(Keysym::Delete, ctrl));
         assert!(!bindings.delete_word_forward.matches(Keysym::Delete, none));
+        assert!(bindings.delete_result.matches(Keysym::Delete, shift));
+        assert!(!bindings.delete_result.matches(Keysym::Delete, none));
+        assert!(!bindings.delete_forward.matches(Keysym::Delete, shift));
 
         // Backspace / Ctrl+Backspace
         assert!(bindings.backspace.matches(Keysym::BackSpace, none));

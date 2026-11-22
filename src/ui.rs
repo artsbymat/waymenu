@@ -501,6 +501,28 @@ impl UiModel {
         }
     }
 
+    pub(crate) fn delete_selected_result(&mut self) {
+        if self.help_mode || self.dmenu.is_some() {
+            return;
+        }
+        let Some(result) = self.results.get(self.selected) else {
+            return;
+        };
+        let Some((plugin, _)) = self
+            .plugins
+            .as_ref()
+            .and_then(|plugins| plugins.select(&self.input))
+        else {
+            return;
+        };
+        if !plugin.delete_result(result) {
+            return;
+        }
+        let selected = self.selected;
+        self.refresh();
+        self.selected = selected.min(self.results.len().saturating_sub(1));
+    }
+
     pub fn record_launch(&mut self, id: &str) {
         if self.config.history.enabled {
             let _ = self.history.record(id);
@@ -753,6 +775,11 @@ impl UiModel {
                     "autocomplete",
                     "Complete selected result",
                     keybindings.autocomplete.as_str(),
+                ),
+                (
+                    "delete-result",
+                    "Delete selected result in supporting plugins",
+                    keybindings.delete_result.as_str(),
                 ),
                 ("next", "Next result", keybindings.next.as_str()),
                 ("previous", "Previous result", keybindings.previous.as_str()),

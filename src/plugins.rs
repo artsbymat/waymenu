@@ -19,6 +19,9 @@ pub trait Plugin {
     fn description(&self) -> &str;
     fn search(&self, query: &str) -> Vec<SearchResult>;
     fn action(&self, result: &SearchResult) -> Action;
+    fn delete_result(&self, _result: &SearchResult) -> bool {
+        false
+    }
     fn unload(&self) {}
 }
 
@@ -226,6 +229,7 @@ fn discover_dynamic_plugins(directory: &Path) -> io::Result<Vec<PathBuf>> {
 struct DynamicPlugin {
     _library: Library,
     api: waymenu_plugin_api::PluginApiV2,
+    delete_result: Option<waymenu_plugin_api::DeleteResultFn>,
     state: AtomicPtr<c_void>,
     id: String,
     prefix: String,
@@ -274,10 +278,15 @@ impl DynamicPlugin {
         if id.is_empty() || prefix.is_empty() || name.is_empty() || description.is_empty() {
             return Err("plugin id, prefix, name, and description must not be empty".into());
         }
+        // SAFETY: Plugins exporting this optional symbol use the SDK signature.
+        let delete_result = unsafe { library.get(b"waymenu_plugin_delete_result_v2\0") }
+            .ok()
+            .map(|symbol| *symbol);
         // Note: Do not call create() here. Plugins are lazily initialized when their prefix is used.
         Ok(Self {
             _library: library,
             api,
+            delete_result,
             state: AtomicPtr::new(std::ptr::null_mut()),
             id,
             prefix,
@@ -429,6 +438,17 @@ impl Plugin for DynamicPlugin {
             waymenu_plugin_api::PluginAction::OpenUrl(url) => Action::OpenUrl(url),
             waymenu_plugin_api::PluginAction::None => Action::None,
         }
+    }
+    fn delete_result(&self, result: &SearchResult) -> bool {
+        let Some(delete_result) = self.delete_result else {
+            return false;
+        };
+        let Ok(id) = CString::new(result.id.as_str()) else {
+            return false;
+        };
+        let state = self.ensure_state();
+        // SAFETY: id is NUL-terminated and the non-null state belongs to this plugin.
+        !state.is_null() && unsafe { delete_result(state, id.as_ptr()) }
     }
     fn unload(&self) {
         self.unload();

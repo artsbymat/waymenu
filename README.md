@@ -67,7 +67,9 @@ or [Brave Origin History](plugins/braveorigin-history/README.md) for Brave Origi
 plugin, type `h ` to search across profiles and open a result in its source profile.
 
 The [Rink calculator](plugins/rink/README.md) uses the `= ` prefix for
-calculations and unit conversions. Press Enter to copy the result.
+calculations and unit conversions. Press Enter to copy the result. Leave the
+input at `= ` to browse recent calculations and press Shift+Delete to remove
+the selected entry. Deletion requires an updated Waymenu executable and plugin.
 
 ```sh
 cargo build --manifest-path plugins/rink/Cargo.toml --release
@@ -230,6 +232,7 @@ backspace           = "BackSpace"
 delete_word         = "Ctrl+w"
 delete_word_back    = "Ctrl+BackSpace"
 delete_forward      = "Delete"
+delete_result       = "Shift+Delete"
 delete_word_forward = "Ctrl+Delete"
 word_left           = "Ctrl+Left"
 word_right          = "Ctrl+Right"
