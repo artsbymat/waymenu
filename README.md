@@ -78,7 +78,8 @@ cp plugins/rink/target/release/librink.so \
   "${XDG_CONFIG_HOME:-$HOME/.config}/waymenu/plugins/"
 ```
 
-The [Emoji Picker](plugins/emoji/README.md) uses the `e ` prefix to find and copy emojis.
+The [Emoji Picker](plugins/emoji/README.md) uses `e ` to find and copy emojis.
+Use `e unicode` to browse Unicode symbols or `e U+2192` to look up a code point.
 
 Use the [Clipboard plugin](plugins/clipboard/README.md) with the `cb ` prefix
 to search history from `clipvault` or `cliphist`.

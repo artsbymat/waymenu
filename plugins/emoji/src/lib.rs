@@ -1,3 +1,5 @@
+mod unicode;
+
 use std::{
     ffi::{c_char, c_void, CStr},
     panic::{catch_unwind, AssertUnwindSafe},
@@ -15,7 +17,7 @@ pub extern "C" fn waymenu_plugin_v2() -> PluginApiV2 {
         id: c"emoji".as_ptr(),
         prefix: c"e ".as_ptr(),
         name: c"Emoji Picker".as_ptr(),
-        description: c"Search and copy emojis to clipboard.".as_ptr(),
+        description: c"Search emojis or type e unicode to browse Unicode symbols.".as_ptr(),
         create: Some(create),
         destroy: Some(destroy),
         search: Some(search),
@@ -42,7 +44,7 @@ unsafe extern "C" fn search(state: *mut c_void, query: *const c_char) -> *mut c_
         let Ok(raw_query) = (unsafe { CStr::from_ptr(query) }).to_str() else {
             return into_json(&Vec::<PluginResult>::new());
         };
-        into_json(&search_emojis(raw_query))
+        into_json(&search_picker(raw_query))
     }))
     .unwrap_or(std::ptr::null_mut())
 }
@@ -67,31 +69,58 @@ fn ordered_match(candidate: &str, query: &str) -> bool {
         .all(|needle| candidate.any(|value| value == needle))
 }
 
+fn search_picker(query: &str) -> Vec<PluginResult> {
+    let query = query.trim();
+    let mut parts = query.splitn(2, char::is_whitespace);
+    if parts
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("unicode"))
+    {
+        return unicode::search(parts.next().unwrap_or_default().trim_start());
+    }
+    if unicode::codepoint_query(query).is_some() {
+        return unicode::search(query);
+    }
+    search_emojis(query)
+}
+
+const MATCH_LIMIT: usize = 50;
+type Entry = (&'static str, &'static str, &'static str, &'static str);
+
 fn search_emojis(query: &str) -> Vec<PluginResult> {
-    let query = query.trim().to_lowercase();
+    ranked_entries(EMOJIS.iter().copied(), query, false, MATCH_LIMIT)
+        .into_iter()
+        .map(|(score, (emoji, name, keywords, category))| PluginResult {
+            id: emoji.to_owned(),
+            title: format!("{emoji}  {name}"),
+            description: format!("{category} · {keywords}"),
+            score,
+            icon: None,
+            image: None,
+            metadata: Some("emoji".into()),
+        })
+        .collect()
+}
+
+fn ranked_entries(
+    entries: impl Iterator<Item = Entry>,
+    query: &str,
+    match_category: bool,
+    limit: usize,
+) -> Vec<(i64, Entry)> {
     if query.is_empty() {
-        return EMOJIS
-            .iter()
-            .take(50)
-            .map(|(emoji, name, keywords, category)| PluginResult {
-                id: (*emoji).to_owned(),
-                title: format!("{emoji}  {name}"),
-                description: format!("{category} · {keywords}"),
-                score: 10_000,
-                icon: None,
-                image: None,
-                metadata: Some("emoji".into()),
-            })
-            .collect();
+        return entries.take(limit).map(|entry| (10_000, entry)).collect();
     }
 
+    let original_query = query;
+    let query = query.to_lowercase();
     let mut matches = Vec::new();
-    for &(emoji, name, keywords, category) in EMOJIS {
+    for entry @ (glyph, name, keywords, category) in entries {
         let name_lower = name.to_lowercase();
         let keywords_lower = keywords.to_lowercase();
 
         let mut score = 0;
-        if name_lower == query || emoji == query {
+        if name_lower == query || glyph == original_query || (!match_category && glyph == query) {
             score = 10_000;
         } else if name_lower.starts_with(&query) {
             score = 9_500;
@@ -113,6 +142,8 @@ fn search_emojis(query: &str) -> Vec<PluginResult> {
             score = 5_000;
         } else if keywords_lower.contains(&query) {
             score = 2_000;
+        } else if match_category && category.to_ascii_lowercase().contains(&query) {
+            score = 1_000;
         } else if ordered_match(&name_lower, &query) {
             score = 500;
         } else if ordered_match(&keywords_lower, &query) {
@@ -120,27 +151,16 @@ fn search_emojis(query: &str) -> Vec<PluginResult> {
         }
 
         if score > 0 {
-            matches.push((score, emoji, name, keywords, category));
+            matches.push((score, entry));
         }
     }
 
     matches.sort_by_key(|a| std::cmp::Reverse(a.0));
+    matches.truncate(limit);
     matches
-        .into_iter()
-        .take(50)
-        .map(|(score, emoji, name, keywords, category)| PluginResult {
-            id: emoji.to_owned(),
-            title: format!("{emoji}  {name}"),
-            description: format!("{category} · {keywords}"),
-            score,
-            icon: None,
-            image: None,
-            metadata: Some("emoji".into()),
-        })
-        .collect()
 }
 
-pub static EMOJIS: &[(&str, &str, &str, &str)] = &[
+pub static EMOJIS: &[Entry] = &[
     // Smileys & Emotion
     (
         "😀",
@@ -1914,20 +1934,48 @@ mod tests {
     }
 
     #[test]
-    fn action_returns_copy_text_with_selected_emoji() {
-        let state = unsafe { create() };
-        let emoji_id = CString::new("🔥").unwrap();
-        let ptr = unsafe { action(state, emoji_id.as_ptr()) };
-        assert!(!ptr.is_null());
+    fn unicode_picker_browses_symbols_and_searches_names_categories_and_codepoints() {
+        let browse = search_picker("unicode");
+        assert!(browse.len() > MATCH_LIMIT);
+        assert_eq!(browse[0].id, "→");
+        assert_eq!(search_picker("")[0].id, "😀");
+        assert_eq!(search_picker("UNICODE   infinity")[0].id, "∞");
+        assert_eq!(search_picker("unicode Ω")[0].id, "Ω");
+        assert!(search_picker("unicode currency")
+            .iter()
+            .any(|row| row.id == "€"));
 
-        let json = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
-        let action_res: PluginAction = serde_json::from_str(json).unwrap();
-        match action_res {
-            PluginAction::CopyText(copied) => assert_eq!(copied, "🔥"),
-            other => panic!("unexpected action: {other:?}"),
+        let arrow = search_picker("u+2192");
+        assert_eq!(arrow.len(), 1);
+        assert_eq!(arrow[0].id, "→");
+        assert_eq!(arrow[0].description, "U+2192 · Arrows");
+        assert_eq!(
+            arrow[0].metadata.as_deref(),
+            Some("autocomplete:unicode U+2192")
+        );
+        assert_eq!(search_picker("unicode U+1F680")[0].id, "🚀");
+        for invalid in ["U+", "U++41", "U+0000", "U+D800", "U+FFFF", "U+110000"] {
+            assert!(search_picker(invalid).is_empty(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn action_copies_only_the_selected_glyph() {
+        let state = unsafe { create() };
+        for result in [
+            search_picker("fire").remove(0),
+            search_picker("U+2192").remove(0),
+        ] {
+            let id = CString::new(result.id.as_str()).unwrap();
+            let ptr = unsafe { action(state, id.as_ptr()) };
+            assert!(!ptr.is_null());
+
+            let json = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+            let action_res: PluginAction = serde_json::from_str(json).unwrap();
+            assert!(matches!(action_res, PluginAction::CopyText(copied) if copied == result.id));
+            unsafe { free_json(ptr) };
         }
 
-        unsafe { free_json(ptr) };
         unsafe { destroy(state) };
     }
 }
