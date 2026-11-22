@@ -81,6 +81,9 @@ cp plugins/rink/target/release/librink.so \
 The [Emoji Picker](plugins/emoji/README.md) uses `e ` to find and copy emojis.
 Use `e unicode` to browse Unicode symbols or `e U+2192` to look up a code point.
 
+Use [Hyprland Caffeine](plugins/hyprland-caffeine/README.md) with `caf ` to keep
+the screen on for a set duration or turn off an active Caffeine session.
+
 Use the [Clipboard plugin](plugins/clipboard/README.md) with the `cb ` prefix
 to search history from `clipvault` or `cliphist`.
 

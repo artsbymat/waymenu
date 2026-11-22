@@ -1,0 +1,13 @@
+[package]
+name = "waymenu-hyprland-caffeine-plugin"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "hyprland_caffeine"
+crate-type = ["cdylib"]
+
+[dependencies]
+waymenu-plugin-api = { path = "../../plugin-api" }

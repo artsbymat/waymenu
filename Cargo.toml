@@ -16,6 +16,7 @@ exclude = [
     "plugins/pacman",
     "plugins/chrome-history",
     "plugins/braveorigin-history",
+    "plugins/hyprland-caffeine",
 ]
 resolver = "2"
 
