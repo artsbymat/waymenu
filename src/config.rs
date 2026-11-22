@@ -85,6 +85,7 @@ pub struct Keybindings {
     pub execute: String,
     pub close: String,
     pub autocomplete: String,
+    pub paste: String,
     pub next: String,
     pub previous: String,
     pub clear: String,
@@ -161,6 +162,7 @@ impl Default for Keybindings {
             execute: "Return".into(),
             close: "Escape".into(),
             autocomplete: "Tab".into(),
+            paste: "Ctrl+v".into(),
             next: "Ctrl+n".into(),
             previous: "Ctrl+p".into(),
             clear: "Ctrl+u".into(),
@@ -297,11 +299,12 @@ impl Config {
 }
 
 impl Keybindings {
-    pub fn all(&self) -> [&str; 21] {
+    pub fn all(&self) -> [&str; 22] {
         [
             &self.execute,
             &self.close,
             &self.autocomplete,
+            &self.paste,
             &self.next,
             &self.previous,
             &self.clear,

@@ -776,6 +776,7 @@ impl UiModel {
                     "Complete selected result",
                     keybindings.autocomplete.as_str(),
                 ),
+                ("paste", "Paste text", keybindings.paste.as_str()),
                 (
                     "delete-result",
                     "Delete selected result in supporting plugins",

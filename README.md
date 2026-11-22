@@ -53,6 +53,8 @@ process. Shell commands run only after Enter; their stdout/stderr is shown insid
 launcher and Esc cancels a running child.
 Press F1 in the launcher to view the active keybindings and installed plugin names,
 prefixes, IDs, and descriptions. The help key can be changed in `[keybindings] help`.
+Press Ctrl+V to paste clipboard text at the cursor. Waymenu replaces line breaks
+with spaces so the input stays on one line.
 
 Optional native plugins are loaded from `$XDG_CONFIG_HOME/waymenu/plugins` (or
 `~/.config/waymenu/plugins`). Dynamic loading is enabled by default and can be disabled
@@ -225,6 +227,7 @@ max_entries = 500          # Maximum entries stored in history.json
 execute             = "Return"
 close               = "Escape"
 autocomplete        = "Tab"
+paste               = "Ctrl+v"
 next                = "Ctrl+n"
 previous            = "Ctrl+p"
 next_arrow          = "Down"

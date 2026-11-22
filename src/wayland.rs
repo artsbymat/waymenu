@@ -1,18 +1,23 @@
+mod clipboard;
+
+use std::time::Instant;
+
 use calloop::{
     channel,
     timer::{TimeoutAction, Timer},
-    EventLoop, LoopHandle,
+    EventLoop, LoopHandle, RegistrationToken,
 };
 use calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
+    data_device_manager::{data_device::DataDevice, DataDeviceManagerState},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
     delegate_registry, delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
-        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
+        keyboard::{KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers},
         pointer::{AxisScroll, PointerEvent, PointerEventKind, PointerHandler, BTN_LEFT},
         Capability, SeatHandler, SeatState,
     },
@@ -28,7 +33,7 @@ use smithay_client_toolkit::{
 use wayland_client::{
     globals::registry_queue_init,
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
-    Connection, QueueHandle,
+    Connection, Proxy, QueueHandle,
 };
 
 use crate::{
@@ -112,6 +117,9 @@ fn run_model(model: UiModel, config: Config) -> Result<Action, Box<dyn std::erro
         height,
         configured: false,
         keyboard: None,
+        data_device_manager: DataDeviceManagerState::bind(&globals, &qh).ok(),
+        data_device: None,
+        paste_transfer: None,
         pointer: None,
         cursor_visible: true,
         last_cursor_activity: std::time::Instant::now(),
@@ -181,6 +189,12 @@ fn run_model(model: UiModel, config: Config) -> Result<Action, Box<dyn std::erro
     event_loop
         .handle()
         .insert_source(blink_timer, |_deadline, _, state| {
+            if state
+                .paste_transfer
+                .is_some_and(|(_, started)| started.elapsed() >= clipboard::PASTE_TIMEOUT)
+            {
+                state.cancel_paste();
+            }
             if !state.model.exit && state.configured && !state.model.is_help_mode() {
                 let idle = state.last_cursor_activity.elapsed();
                 let previous_visibility = state.cursor_visible;
@@ -212,6 +226,9 @@ struct State {
     height: u32,
     configured: bool,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    data_device_manager: Option<DataDeviceManagerState>,
+    data_device: Option<DataDevice>,
+    paste_transfer: Option<(RegistrationToken, Instant)>,
     pointer: Option<wl_pointer::WlPointer>,
     cursor_visible: bool,
     last_cursor_activity: std::time::Instant,
@@ -245,6 +262,7 @@ impl State {
         let key = event.keysym;
         let modifiers = self.modifiers;
         if self.bindings.help.matches(key, modifiers) && !self.model.is_help_mode() {
+            self.cancel_paste();
             self.model.toggle_help();
         } else if self.model.is_help_mode() {
             if self.bindings.close.matches(key, modifiers) {
@@ -267,6 +285,10 @@ impl State {
             self.model.exit = true;
         } else if self.bindings.execute.matches(key, modifiers) {
             self.execute_selection();
+        } else if self.bindings.paste.matches(key, modifiers) {
+            if !is_repeat {
+                self.paste();
+            }
         } else if self.bindings.backspace.matches(key, modifiers) {
             self.model.backspace();
         } else if self.bindings.delete_result.matches(key, modifiers) {
@@ -394,11 +416,12 @@ impl State {
     }
 
     fn execute_selection(&mut self) {
-        if self
-            .model
-            .results
-            .get(self.model.selected)
-            .is_some_and(crate::SearchResult::is_pending)
+        if self.paste_transfer.is_some()
+            || self
+                .model
+                .results
+                .get(self.model.selected)
+                .is_some_and(crate::SearchResult::is_pending)
         {
             return;
         }
@@ -581,6 +604,12 @@ impl SeatHandler for State {
                     Box::new(|state, _, event| state.handle_key(event, true)),
                 )
                 .ok();
+            if self.keyboard.is_some() {
+                self.data_device = self
+                    .data_device_manager
+                    .as_ref()
+                    .map(|manager| manager.get_data_device(qh, &seat));
+            }
         }
         if capability == Capability::Pointer && self.pointer.is_none() {
             self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
@@ -590,10 +619,18 @@ impl SeatHandler for State {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
+        seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Keyboard {
+        if capability == Capability::Keyboard
+            && self.keyboard.as_ref().is_some_and(|keyboard| {
+                keyboard
+                    .data::<KeyboardData<State>>()
+                    .is_some_and(|data| data.seat() == &seat)
+            })
+        {
+            self.cancel_paste();
+            self.data_device = None;
             if let Some(keyboard) = self.keyboard.take() {
                 keyboard.release();
             }
@@ -627,6 +664,7 @@ impl KeyboardHandler for State {
         _: &wl_surface::WlSurface,
         _: u32,
     ) {
+        self.cancel_paste();
     }
     fn press_key(
         &mut self,
@@ -693,6 +731,7 @@ struct RuntimeBindings {
     execute: Binding,
     close: Binding,
     autocomplete: Binding,
+    paste: Binding,
     next: Binding,
     previous: Binding,
     clear: Binding,
@@ -723,6 +762,7 @@ impl RuntimeBindings {
             execute: parse(&value.execute)?,
             close: parse(&value.close)?,
             autocomplete: parse(&value.autocomplete)?,
+            paste: parse(&value.paste)?,
             next: parse(&value.next)?,
             previous: parse(&value.previous)?,
             clear: parse(&value.clear)?,
@@ -878,5 +918,7 @@ mod tests {
 
         // Ctrl + W
         assert!(bindings.delete_word.matches(Keysym::w, ctrl));
+        assert!(bindings.paste.matches(Keysym::v, ctrl));
+        assert!(!bindings.paste.matches(Keysym::v, none));
     }
 }
