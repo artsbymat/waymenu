@@ -1,0 +1,13 @@
+[package]
+name = "waymenu-google-translate-plugin"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "google_translate"
+crate-type = ["cdylib"]
+
+[dependencies]
+waymenu-plugin-api = { path = "../../plugin-api" }

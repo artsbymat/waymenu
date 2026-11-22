@@ -64,6 +64,9 @@ plugin. Native plugins execute in the launcher process, so only install plugins 
 Use the [Web Search plugin](plugins/web-search/README.md) with the `s ` prefix to
 search websites or open bookmarks from your own TOML files.
 
+Use [Google Translate](plugins/google-translate/README.md) with `tr ` to open
+text in the browser. For example, `tr @en selamat pagi` translates into English.
+
 Choose [Chrome History](plugins/chrome-history/README.md) for Google Chrome Stable
 or [Brave Origin History](plugins/braveorigin-history/README.md) for Brave Origin. With either
 plugin, type `h ` to search across profiles and open a result in its source profile.
